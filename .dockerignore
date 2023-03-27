@@ -1,0 +1,14 @@
+
+# First exclude everything
+**
+*.*
+
+# Then explicitly allowlist what is required
+!cmd
+!pkg
+!Makefile
+!go.mod
+!examples/echo/echo-clients/Makefile
+!examples/echo/echo-clients/go.mod
+!examples/echo/echo-clients/rpcclient.go
+
