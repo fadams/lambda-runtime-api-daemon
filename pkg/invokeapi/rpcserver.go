@@ -1,0 +1,196 @@
+//
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+//
+
+package invokeapi
+
+import (
+	"context"
+	//"fmt"
+	log "github.com/sirupsen/logrus" // Structured logging
+	"os"
+	"runtime"
+
+	"lambda-runtime-api-daemon/pkg/config/rapid"
+	"lambda-runtime-api-daemon/pkg/messaging"
+	"lambda-runtime-api-daemon/pkg/process"
+	"lambda-runtime-api-daemon/pkg/runtimeapi"
+)
+
+func NewRPCServer(cfg *rapid.Config, pm *process.ProcessManager,
+	rapi *runtimeapi.RuntimeAPI) *InvokeAPI {
+
+	iapi := &InvokeAPI{
+		close:   func() {}, // NOOP default implementation
+		pm:      pm,
+		rapi:    rapi,
+		version: cfg.Version,
+		handler: cfg.Handler,
+		cwd:     cfg.Cwd,
+		cmd:     cfg.Cmd,
+		env:     cfg.Env,
+		timeout: cfg.Timeout,
+		memory:  cfg.Memory,
+		report:  cfg.Report,
+	}
+
+	if cfg.RPCServerURI == "" {
+		log.Warn("No broker Connection URI is set, RPCServer has been disabled")
+		return iapi
+	}
+
+	go func() {
+		defer os.Exit(1) // Exiting this goroutine is fatal, so force os.Exit
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Concrete close implementation calls cancel() on the base context.
+		iapi.close = func() {
+			cancel()
+			runtime.Goexit() // Let cancel() cleanly stop the RPCServer and run defers.
+		}
+
+		exitOnError := func(err error, msg string) {
+			if err != nil {
+				log.Infof("%s: %s", msg, err)
+				// Use runtime.Goexit() https://pkg.go.dev/runtime#Goexit with
+				// defer os.Exit(1) is an idiom that allows us to exit but
+				// still run all the other defers, so is cleaner than just
+				// directly calling os.Exit(1) here.
+				// https://www.golinuxcloud.com/golang-handle-defer-calls-os-exit/#Method-3_Handle_defer_calls_with_the_osExit_and_the_Goexit
+				runtime.Goexit()
+			}
+		}
+
+		// Establish connection to AMQP broker. This may block if the connection
+		// URL has been configured with multiple Connection Attempts. We use
+		// separate connections for consuming RPC requests and sending the
+		// corresponding RPC responses because it mitigates potential TCP
+		// pushback on publishing affecting consumer throughput. Moreover, it
+		// mitigates the lock contention on the Connection that would exist
+		// between Message acks and Message sends when the RPC handlers are
+		// launched as goroutines (which they need to be to allow concurrent
+		// RPC invocations). TL;DR separate connections increases throughput.
+		// amqp://guest:guest@localhost:5672?connection_attempts=20&retry_delay=10&heartbeat=0
+		cConnection, err := messaging.NewConnection(
+			cfg.RPCServerURI,
+			messaging.Context(ctx),
+			messaging.ConnectionName("RPC consumer Connection"),
+		)
+		exitOnError(err, "RPC consumer Connection failed to connect to AMQP broker")
+		defer cConnection.Close()
+
+		pConnection, err := messaging.NewConnection(
+			cfg.RPCServerURI,
+			messaging.Context(ctx),
+			messaging.ConnectionName("RPC producer Connection"),
+		)
+		exitOnError(err, "RPC producer Connection failed to connect to AMQP broker")
+		defer pConnection.Close()
+
+		// It's important to *not* use messaging.AutoAck on the consumer
+		// Session. It can potentially improve throughput as acknowledgement
+		// is done by the broker, so eliminates the network and syscall cost
+		// of the Ack. The down side, however, is that messages won't be
+		// redelivered on failure, but a more significant down side is that
+		// rpcHandlers are launched as goroutines and if AutoAck is set
+		// the mumber of handler goroutines could grow very large if the
+		// message delivery rate is higher than the ability to service
+		// invocation requests. By using explicit acknowledgement and a
+		// sensible message prefetch/capacity/QoS size then the number of
+		// in-flight rpcHandler goroutines is then bounded to that number.
+		// TODO Rather than AutoAck on one end of the spectrum and Acking
+		// each message on the other it may be possible to "batch" Ack.
+		cSession, err := cConnection.Session(messaging.SessionName("RPC consumer Session"))
+		exitOnError(err, "Failed to open RPC consumer Session")
+		defer cSession.Close()
+
+		pSession, err := pConnection.Session(messaging.SessionName("RPC producer Session"))
+		exitOnError(err, "Failed to open RPC producer Session")
+		defer pSession.Close()
+
+		// Use AWS_LAMBDA_FUNCTION_NAME or handler name from config.
+		consumer, err := cSession.Consumer(
+			//cfg.FunctionName + `; {"node": {"auto-delete": true}}`, messaging.Pool(2),
+			cfg.FunctionName + `; {"node": {"auto-delete": true}}`,
+		)
+		exitOnError(err, "Failed to create RPC Consumer") // Should be unlikely
+
+		// Set Consumer message prefetch/capacity/QoS
+		//consumer.SetCapacity(10)
+		//consumer.SetCapacity(1000)
+		consumer.SetCapacity(5 * cfg.MaxConcurrency)
+		//consumer.SetCapacity(cfg.MaxConcurrency)
+
+		// Create Producer for AMQP RPC replies. The "" address means use the
+		// default direct exchange and the Message Subject will be used as the
+		// Routing Key, which in this case will be the ReplyTo from the request.
+		reply, err := pSession.Producer("")
+		exitOnError(err, "Failed to create RPC Producer") // Should be unlikely
+
+		rpcHandler := func(message messaging.Message) {
+			//log.Printf("Received a message: %s", message.Body)
+			//log.Println(message)
+
+			b64CC := "" // TODO
+			message.Body = iapi.invoke(
+				ctx,
+				cfg.FunctionName,
+				message.CorrelationID,
+				b64CC,
+				message.Body,
+			)
+			message.Subject = message.ReplyTo
+			message.ReplyTo = ""
+			reply.Send(message)
+
+			message.Acknowledge(messaging.Multiple(false))
+		}
+
+		// Get the Message Consume and Connection CloseNotify channels outside
+		// the loop as Consume() employs a lock and CloseNotify() creates the
+		// chan, registers it as a listener then returns the chan, which we
+		// don't want to do each iteration.
+		msgs := consumer.Consume()
+		pCloseNotify := cConnection.CloseNotify()
+		cCloseNotify := pConnection.CloseNotify()
+	loop:
+		for {
+			select {
+			// Handle Messages from the Consumer channel
+			case m := <-msgs:
+				// Handler launched as goroutine to enable concurrent requests.
+				go rpcHandler(m)
+			// Listen on the CloseNotify channels and exit on error if broker
+			// connection fails and the maximum Connection Attempts is exceeded.
+			case err := <-pCloseNotify:
+				exitOnError(err, "RPC consumer Connection to AMQP broker was "+
+					"closed and maximum Connection Attempts exceeded")
+			case err := <-cCloseNotify:
+				exitOnError(err, "RPC producer Connection to AMQP broker was "+
+					"closed and maximum Connection Attempts exceeded")
+			case <-ctx.Done(): // Exit main loop when cancel function is called.
+				break loop
+			}
+		}
+
+		log.Info("RPCServer stopped")
+	}()
+
+	return iapi
+}
