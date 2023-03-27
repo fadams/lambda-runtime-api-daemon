@@ -31,7 +31,7 @@ In this case we exec "aws-lambda-rie", which will then run as PID1 in the contai
 
 This approach follows the pattern described in the AWS documentation [Testing Images](https://docs.aws.amazon.com/lambda/latest/dg/images-test.html) section under the heading "Build RIE into your base image" and also described in the [Runtime Interface Emulator](https://github.com/aws/aws-lambda-runtime-interface-emulator/#build-rie-into-your-base-image) documentation.
 
-Note that the executable path `/usr/local/bin/aws-lambda-rie` has been used in `lambda-entrypoint.sh`. That is potentially slightly odd and a little confusing, but the reason is simply because the AWS base images bundle the RIE and they have an ENTRYPOINT that attempts to use `aws-lambda-rie` if AWS_LAMBDA_RUNTIME_API is not set. So, the `lambda-entrypoint.sh` in this example uses that path purely for consistency with the AWS supplied base images. When the container is run the `lambda-runtime-api-daemon` executable is bind-mounted to `/usr/local/bin/aws-lambda-rie`and so it is* actually* `lambda-runtime-api-daemon` that is executed .
+Note that the executable path `/usr/local/bin/aws-lambda-rie` has been used in `lambda-entrypoint.sh`. That is potentially slightly odd and a little confusing, but the reason is simply because the AWS base images bundle the RIE and they have an ENTRYPOINT that attempts to use `aws-lambda-rie` if AWS_LAMBDA_RUNTIME_API is not set. So, the `lambda-entrypoint.sh` in this example uses that path purely for consistency with the AWS supplied base images. When the container is run the `lambda-runtime-api-daemon` executable is bind-mounted to `/usr/local/bin/aws-lambda-rie`and so it is *actually* `lambda-runtime-api-daemon` that is executed .
 
 To build the image:
 ```
