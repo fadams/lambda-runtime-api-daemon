@@ -1,0 +1,16 @@
+[package]
+# WASI is WebAssembly System Interface
+# https://hacks.mozilla.org/2019/03/standardizing-wasi-a-webassembly-system-interface/
+# https://github.com/bytecodealliance/wasmtime/blob/main/docs/WASI-intro.md
+name = "wasi-inference"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "image-classification"
+path = "src/main.rs"
+
+[dependencies]
+# https://crates.io/crates/wasmedge_tensorflow_interface
+# https://github.com/second-state/wasmedge_tensorflow_interface
+wasmedge_tensorflow_interface = "^0.2.0"

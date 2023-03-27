@@ -1,0 +1,9 @@
+
+# First exclude everything
+**
+*.*
+
+# Then explicitly allowlist what is required
+!bootstrap
+!function.sh
+!lambda-entrypoint.sh

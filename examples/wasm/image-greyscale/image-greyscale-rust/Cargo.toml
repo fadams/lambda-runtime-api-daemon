@@ -1,0 +1,16 @@
+[package]
+# WASI is WebAssembly System Interface
+# https://hacks.mozilla.org/2019/03/standardizing-wasi-a-webassembly-system-interface/
+# https://github.com/bytecodealliance/wasmtime/blob/main/docs/WASI-intro.md
+name = "wasi-greyscale"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "image-greyscale"
+path = "src/main.rs"
+
+[dependencies]
+# https://crates.io/crates/image
+# https://github.com/image-rs/image
+image = { version = "0.23.0", default-features = false, features = ["jpeg", "png", "gif"] }

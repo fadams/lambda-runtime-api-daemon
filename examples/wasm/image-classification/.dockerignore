@@ -1,0 +1,9 @@
+
+# First exclude everything
+**
+*.*
+
+# Then explicitly allowlist what is required
+!image-classification-rust
+!image-classification.js
+!lambda-entrypoint.sh

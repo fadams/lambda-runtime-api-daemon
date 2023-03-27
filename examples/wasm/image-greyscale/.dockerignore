@@ -1,0 +1,9 @@
+
+# First exclude everything
+**
+*.*
+
+# Then explicitly allowlist what is required
+!image-greyscale-rust
+!image-greyscale.js
+!lambda-entrypoint.sh
