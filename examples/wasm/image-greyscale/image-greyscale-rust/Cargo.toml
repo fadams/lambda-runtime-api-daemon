@@ -13,4 +13,4 @@ path = "src/main.rs"
 [dependencies]
 # https://crates.io/crates/image
 # https://github.com/image-rs/image
-image = { version = "0.23.0", default-features = false, features = ["jpeg", "png", "gif"] }
+image = { version = "0.24.6", default-features = false, features = ["jpeg", "png", "gif"] }
