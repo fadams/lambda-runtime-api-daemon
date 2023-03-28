@@ -1,0 +1,16 @@
+[package]
+# WASI is WebAssembly System Interface
+# https://hacks.mozilla.org/2019/03/standardizing-wasi-a-webassembly-system-interface/
+# https://github.com/bytecodealliance/wasmtime/blob/main/docs/WASI-intro.md
+name = "wasi-bmp"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "image-bmp"
+path = "src/main.rs"
+
+[dependencies]
+# https://crates.io/crates/image
+# https://github.com/image-rs/image
+image = "0.24.6"
