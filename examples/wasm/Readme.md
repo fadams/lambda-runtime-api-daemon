@@ -26,4 +26,6 @@ The Wasm [stack machine](https://webassembly.github.io/spec/core/exec/index.html
 ## Examples
 * [image-greyscale](image-greyscale): This Lambda implements a filter (written in Rust and compiled to WebAssembly) to convert images to greyscale based on the [WasmEdge](https://wasmedge.org) image processing [example](https://wasmedge.org/book/en/use_cases/frameworks/serverless/aws.html#example-1-image-processing),
 
+* [image-bmp](image-bmp): This Lambda implements a filter (written in Rust and compiled to WebAssembly) to convert images to [BMP file format](https://en.wikipedia.org/wiki/BMP_file_format), it is somewhat based on the [image-greyscale](image-greyscale) example with some light modifications to the Rust filter code.
+
 * [image-classification](image-classification): This Lambda classifies images in an application (written in Rust and compiled to WebAssembly) using [WasmEdge Tensorflow](https://github.com/second-state/WasmEdge-tensorflow-tools) to run AI inference based on the [WasmEdge](https://wasmedge.org) inference [example](https://wasmedge.org/book/en/use_cases/frameworks/serverless/aws.html#example-2-ai-inference).
