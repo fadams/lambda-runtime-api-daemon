@@ -17,61 +17,51 @@
 // under the License.
 //
 
-// TODO - currently just a copy of the RAPID Config
-
 package server
 
 import (
-	//log "github.com/sirupsen/logrus" // Structured logging
-	//"os"
-	"strings"
-
 	"lambda-runtime-api-daemon/pkg/config/env"
 )
 
 const (
-	//defaultPrintReportsValue = "TRUE"
-	defaultPrintReportsValue = "FALSE"
-
 	// https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html
 	defaultInvokeAPIHost = "0.0.0.0"
 	defaultInvokeAPIPort = "8080"
 
-	// https://docs.aws.amazon.com/lambda/latest/dg/runtimes-api.html
-	defaultRuntimeAPIHost = "127.0.0.1"
-	defaultRuntimeAPIPort = "9001"
+	// Note that the default localhost address won't behave in the way that
+	// may be expected if the Lambda Server is deployed in a container, as
+	// localhost will refer to the *container's* localhost, which is unlikely
+	// to be where the AMQP broker is bound to. In practice therefore for
+	// container deployments the AMQP_URI environment variable most likely
+	// will need to be set with the required broker URI.
+	defaultRPCServerURI = "amqp://guest:guest@localhost:5672?connection_attempts=20&retry_delay=10&heartbeat=0"
 
-	defaultMaxConcurrency int = 10
-
-	// AWS Error response seems to use RFC3339 timestamps will millisecond precision
-	// but https://pkg.go.dev/time#pkg-constants only has RFC3339 and RFC3339Nano
-	//RFC3339Milli = "2006-01-02T15:04:05.999Z07"
-
+	// Note that for the Lambda Server we can't know the timeouts set
+	// for each Lambda as they are decoupled by a messaging fabric.
+	// In most cases the Lambdas will send a response message when they
+	// time out, but we also have a fail safe timeout here for cases
+	// where a Lambda fails between receiving a request and sending a
+	// response. This timeout needs to be higher than the highest
+	// expected legitimate Lambda timeout. We set the default to be
+	// 1800 seconds (30 minutes) as that is twice the AWS Lambda max
+	// timeout of 15 minutes and also happens to be the RabbitMQ ack
+	// timeout where the broker closes a channel if a message acknowledge
+	// hasn't occurred within 30 minutes of the message being delivered.
 	// https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html#configuration-timeout-console
-	AWS_LAMBDA_FUNCTION_TIMEOUT_DEFAULT int = 3
-
-	AWS_LAMBDA_FUNCTION_MEMORY_SIZE_DEFAULT int = 3008
-
-	// https://docs.aws.amazon.com/lambda/latest/dg/configuration-versions.html
-	AWS_LAMBDA_FUNCTION_VERSION_DEFAULT string = "$LATEST"
-
-	AWS_LAMBDA_FUNCTION_IDLETIMEOUT_DEFAULT int = 1800 // 1800 seconds = 30 mins
+	//
+	// Invocation requests to non-existent/non-deployed Lambdas are
+	// identified quickly as requests are published with Mandatory set
+	// true, so if they are unroutable the will be returned by the broker
+	// so the purpose of this timeout is to cater for cases where
+	// the requests have actually succeeded, but the Lambda fails to
+	// respond at all.
+	AWS_LAMBDA_FUNCTION_TIMEOUT_DEFAULT int = 1800
 )
 
 type Config struct {
-	InvokeAPI      string
-	RuntimeAPI     string
-	FunctionName   string
-	Version        string
-	Handler        string
-	Cwd            string
-	Cmd            []string
-	Env            []string
-	Timeout        int
-	IdleTimeout    int
-	Memory         int
-	MaxConcurrency int
-	Report         bool
+	InvokeAPIServerURI string
+	RPCServerURI       string
+	Timeout            int
 }
 
 // Returns a populated Config instance for use by the rest of the application.
@@ -80,86 +70,19 @@ type Config struct {
 func GetConfig() *Config {
 	invokeAPIHost := env.Getenv("INVOKE_API_HOST", defaultInvokeAPIHost)
 	invokeAPIPort := env.Getenv("PORT", defaultInvokeAPIPort)
-	runtimeAPIHost := env.Getenv("RUNTIME_API_HOST", defaultRuntimeAPIHost)
-	runtimeAPIPort := env.Getenv("RUNTIME_API_PORT", defaultRuntimeAPIPort)
-	name := env.Getenv("AWS_LAMBDA_FUNCTION_NAME", "")
-	version := env.Getenv(
-		"AWS_LAMBDA_FUNCTION_VERSION",
-		AWS_LAMBDA_FUNCTION_VERSION_DEFAULT,
-	)
+
+	rpcServerURI := env.Getenv("AMQP_URI", defaultRPCServerURI)
+
 	timeout := env.GetenvInt(
 		"AWS_LAMBDA_FUNCTION_TIMEOUT",
 		AWS_LAMBDA_FUNCTION_TIMEOUT_DEFAULT,
 	)
-	idleTimeout := env.GetenvInt(
-		"AWS_LAMBDA_FUNCTION_IDLETIMEOUT",
-		AWS_LAMBDA_FUNCTION_IDLETIMEOUT_DEFAULT,
-	)
-	memory := env.GetenvInt(
-		"AWS_LAMBDA_FUNCTION_MEMORY_SIZE",
-		AWS_LAMBDA_FUNCTION_MEMORY_SIZE_DEFAULT,
-	)
-	maxConcurrency := env.GetenvInt("MAX_CONCURRENCY", defaultMaxConcurrency)
-	report := strings.ToUpper(
-		env.Getenv("PRINT_REPORTS", defaultPrintReportsValue)) == "TRUE"
 
 	config := &Config{
-		InvokeAPI:      invokeAPIHost + ":" + invokeAPIPort,
-		RuntimeAPI:     runtimeAPIHost + ":" + runtimeAPIPort,
-		FunctionName:   name,
-		Version:        version,
-		Timeout:        timeout,
-		IdleTimeout:    idleTimeout,
-		Memory:         memory,
-		MaxConcurrency: maxConcurrency,
-		Report:         report,
+		InvokeAPIServerURI: invokeAPIHost + ":" + invokeAPIPort,
+		RPCServerURI:       rpcServerURI,
+		Timeout:            timeout,
 	}
-	/*
-		// Normal usage of the Lambda Runtime API Daemon is something like:
-		// lambda-rapid python3 -m awslambdaric echo.handler
-		// The following block gets the current working directory and the args
-		// we need to actually launch the Lambda. If no args are supplied
-		// we fall back to some standard paths for a bootstrap handler
-		// https://docs.aws.amazon.com/lambda/latest/dg/runtimes-custom.html
-		config.Cwd = "/var/task" // default value
-		args := os.Args
-		if len(args) > 1 { // Use args to invoke Runtime Interface Client
-			config.Cmd = args[1:]
-			if cwd, err := os.Getwd(); err == nil {
-				config.Cwd = cwd
-			}
-
-			if len(args) > 2 { // Assume last arg is the handler
-				config.Handler = args[len(args)-1]
-			}
-		} else { // If any of the candidate bootstrap files exist set Cmd to that
-			candidates := []string{"/var/task/bootstrap", "/opt/bootstrap",
-				"/var/runtime/bootstrap"}
-			for _, candidate := range candidates {
-				file, err := os.Stat(candidate)
-				if !os.IsNotExist(err) && !file.IsDir() {
-					config.Cmd = []string{candidate}
-					break
-				}
-			}
-			// If none of the candidate bootstrap files exist set to default
-			if len(config.Cmd) == 0 {
-				config.Cmd = []string{"/var/task/bootstrap"}
-			}
-		}
-
-		// Infer AWS_LAMBDA_FUNCTION_NAME from handler if not explicitly set.
-		if config.FunctionName == "" {
-			if config.Handler == "" {
-				log.Warn("Neither AWS_LAMBDA_FUNCTION_NAME nor a handler are " +
-					"set, unable to infer function name")
-			} else {
-				config.FunctionName = strings.Split(config.Handler, ".")[0]
-				log.Warnf("AWS_LAMBDA_FUNCTION_NAME is not set, setting to %s "+
-					"inferred from handler %s", config.FunctionName, config.Handler)
-			}
-		}
-	*/
 
 	return config
 }

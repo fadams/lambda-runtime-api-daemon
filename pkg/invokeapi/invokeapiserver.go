@@ -31,26 +31,15 @@ import (
 	// Chose chi over github.com/gorilla/mux as it seems the more active project
 	// https://pkg.go.dev/github.com/go-chi/chi/v5https://www.bbc.co.uk/news/business-64708230
 	"github.com/go-chi/chi/v5"
-
-	"lambda-runtime-api-daemon/pkg/config/rapid"
-	"lambda-runtime-api-daemon/pkg/process"
-	"lambda-runtime-api-daemon/pkg/runtimeapi"
 )
 
-func NewInvokeAPIServer(cfg *rapid.Config, pm *process.ProcessManager,
-	rapi *runtimeapi.RuntimeAPI) *InvokeAPI {
+type InvokeAPIServer struct {
+	close func()
+}
 
-	iapi := &InvokeAPI{
-		pm:      pm,
-		rapi:    rapi,
-		version: cfg.Version,
-		handler: cfg.Handler,
-		cwd:     cfg.Cwd,
-		cmd:     cfg.Cmd,
-		env:     cfg.Env,
-		timeout: cfg.Timeout,
-		memory:  cfg.Memory,
-		report:  cfg.Report,
+func NewInvokeAPIServer(uri string, invoker Invoker) *InvokeAPIServer {
+	srv := &InvokeAPIServer{
+		close: func() {}, // NOOP default implementation
 	}
 
 	// Handler for the AWS Lambda Invoke API invocations method
@@ -63,6 +52,9 @@ func NewInvokeAPIServer(cfg *rapid.Config, pm *process.ProcessManager,
 	// invoke() for HTTP or AMQP-RPC invocations.
 	invocations := func(w http.ResponseWriter, r *http.Request) {
 		name := chi.URLParam(r, "function") // Get function name from Invoke URI
+
+		// Use deliberately zero timestamp here (will be set by invoker)
+		var t time.Time
 
 		headers := r.Header
 		// Use Invocation ID as the correlationID if set, otherwise generate one.
@@ -77,7 +69,7 @@ func NewInvokeAPIServer(cfg *rapid.Config, pm *process.ProcessManager,
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			w.Write(iapi.invoke(r.Context(), name, correlationID, b64CC, body))
+			w.Write(invoker.invoke(r.Context(), t, name, correlationID, b64CC, body))
 		}
 	}
 
@@ -85,12 +77,13 @@ func NewInvokeAPIServer(cfg *rapid.Config, pm *process.ProcessManager,
 	invokeRouter := chi.NewRouter()
 	invokeRouter.HandleFunc("/2015-03-31/functions/{function}/invocations", invocations)
 	invokeServer := &http.Server{
-		Addr:    cfg.InvokeAPIServerURI, // Default is 0.0.0.0:8080
+		Addr:    uri, // Default is 0.0.0.0:8080
 		Handler: invokeRouter,
 	}
 
 	// Concrete close implementation cleanly calls http.Server.Shutdown()
-	iapi.close = func() {
+	srv.close = func() {
+		invoker.Close() // Cleanly close the invoker implementation
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
@@ -101,7 +94,7 @@ func NewInvokeAPIServer(cfg *rapid.Config, pm *process.ProcessManager,
 	}
 
 	go func() {
-		log.Infof("InvokeAPI listening on %s", cfg.InvokeAPIServerURI)
+		log.Infof("InvokeAPI listening on %s", uri)
 		if err := invokeServer.ListenAndServe(); err != nil {
 			log.Infof("InvokeAPI ListenAndServe %v", err)
 			if err == http.ErrServerClosed {
@@ -115,5 +108,11 @@ func NewInvokeAPIServer(cfg *rapid.Config, pm *process.ProcessManager,
 		}
 	}()
 
-	return iapi
+	return srv
+}
+
+// Cleanly close the InvokeAPIServer. Delegates to a concrete implementation
+// that is assigned by the implementation specific factory method.
+func (srv *InvokeAPIServer) Close() {
+	srv.close()
 }

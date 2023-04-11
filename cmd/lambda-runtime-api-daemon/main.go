@@ -25,7 +25,7 @@
 // The Daemon also implements the AWS Lambda Invoke API:
 // https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html
 // so that client applications can, either directly via the Invoke REST API or
-// via AWS SDKs like boto3, invoke Lambda functions by calling the Invoke API,
+// via AWS SDKs like boto3, invoke Lambda Functions by calling the Invoke API,
 // which will in turn pass the invocation over a channel to rendezvous with the
 // next available inbound Runtime API next invocation API call.
 //
@@ -37,7 +37,6 @@
 // include populated reply_to and correlation_id AMQP properties to allow
 // the response message to be sent back to the requestor and associated with
 // the original request made by the client.
-//
 
 package main
 
@@ -62,11 +61,17 @@ func main() {
 	defer rapi.Close()
 
 	// Run InvokeAPIServer in a goroutine and cleanly stop on exit.
-	iapi := invokeapi.NewInvokeAPIServer(cfg, pm, rapi)
+	iapi := invokeapi.NewInvokeAPIServer(
+		cfg.InvokeAPIServerURI,
+		invokeapi.NewRAPIInvoker(cfg, pm, rapi),
+	)
 	defer iapi.Close()
 
 	// Run AMQP RPCServer in a goroutine and cleanly stop on exit.
-	rpc := invokeapi.NewRPCServer(cfg, pm, rapi)
+	rpc := invokeapi.NewRPCServer(
+		cfg.RPCServerURI, cfg.FunctionName, cfg.MaxConcurrency,
+		invokeapi.NewRAPIInvoker(cfg, pm, rapi),
+	)
 	defer rpc.Close()
 
 	// Handle signals, blocking until exit

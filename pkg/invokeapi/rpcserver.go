@@ -23,35 +23,19 @@ import (
 	"context"
 	//"fmt"
 	log "github.com/sirupsen/logrus" // Structured logging
+	"lambda-runtime-api-daemon/pkg/messaging"
 	"os"
 	"runtime"
-
-	"lambda-runtime-api-daemon/pkg/config/rapid"
-	"lambda-runtime-api-daemon/pkg/messaging"
-	"lambda-runtime-api-daemon/pkg/process"
-	"lambda-runtime-api-daemon/pkg/runtimeapi"
 )
 
-func NewRPCServer(cfg *rapid.Config, pm *process.ProcessManager,
-	rapi *runtimeapi.RuntimeAPI) *InvokeAPI {
-
-	iapi := &InvokeAPI{
-		close:   func() {}, // NOOP default implementation
-		pm:      pm,
-		rapi:    rapi,
-		version: cfg.Version,
-		handler: cfg.Handler,
-		cwd:     cfg.Cwd,
-		cmd:     cfg.Cmd,
-		env:     cfg.Env,
-		timeout: cfg.Timeout,
-		memory:  cfg.Memory,
-		report:  cfg.Report,
+func NewRPCServer(uri string, name string, concurrency int, invoker Invoker) *InvokeAPIServer {
+	srv := &InvokeAPIServer{
+		close: func() {}, // NOOP default implementation
 	}
 
-	if cfg.RPCServerURI == "" {
+	if uri == "" {
 		log.Warn("No broker Connection URI is set, RPCServer has been disabled")
-		return iapi
+		return srv
 	}
 
 	go func() {
@@ -60,7 +44,8 @@ func NewRPCServer(cfg *rapid.Config, pm *process.ProcessManager,
 		ctx, cancel := context.WithCancel(context.Background())
 
 		// Concrete close implementation calls cancel() on the base context.
-		iapi.close = func() {
+		srv.close = func() {
+			invoker.Close() // Cleanly close the invoker implementation
 			cancel()
 			runtime.Goexit() // Let cancel() cleanly stop the RPCServer and run defers.
 		}
@@ -88,7 +73,7 @@ func NewRPCServer(cfg *rapid.Config, pm *process.ProcessManager,
 		// RPC invocations). TL;DR separate connections increases throughput.
 		// amqp://guest:guest@localhost:5672?connection_attempts=20&retry_delay=10&heartbeat=0
 		cConnection, err := messaging.NewConnection(
-			cfg.RPCServerURI,
+			uri,
 			messaging.Context(ctx),
 			messaging.ConnectionName("RPC consumer Connection"),
 		)
@@ -96,7 +81,7 @@ func NewRPCServer(cfg *rapid.Config, pm *process.ProcessManager,
 		defer cConnection.Close()
 
 		pConnection, err := messaging.NewConnection(
-			cfg.RPCServerURI,
+			uri,
 			messaging.Context(ctx),
 			messaging.ConnectionName("RPC producer Connection"),
 		)
@@ -124,18 +109,18 @@ func NewRPCServer(cfg *rapid.Config, pm *process.ProcessManager,
 		exitOnError(err, "Failed to open RPC producer Session")
 		defer pSession.Close()
 
-		// Use AWS_LAMBDA_FUNCTION_NAME or handler name from config.
+		// Uses AWS_LAMBDA_FUNCTION_NAME or handler name from config.
 		consumer, err := cSession.Consumer(
-			//cfg.FunctionName + `; {"node": {"auto-delete": true}}`, messaging.Pool(2),
-			cfg.FunctionName + `; {"node": {"auto-delete": true}}`,
+			//name + `; {"node": {"auto-delete": true}}`, messaging.Pool(2),
+			name + `; {"node": {"auto-delete": true}}`,
 		)
 		exitOnError(err, "Failed to create RPC Consumer") // Should be unlikely
 
 		// Set Consumer message prefetch/capacity/QoS
-		//consumer.SetCapacity(10)
-		//consumer.SetCapacity(1000)
-		consumer.SetCapacity(5 * cfg.MaxConcurrency)
-		//consumer.SetCapacity(cfg.MaxConcurrency)
+		// 5 * concurrency is somewhat arbitrary but provides some additional
+		// "buffering" and improved throughput compared with simply setting
+		// the prefetch to the configured concurrency value.
+		consumer.SetCapacity(5 * concurrency)
 
 		// Create Producer for AMQP RPC replies. The "" address means use the
 		// default direct exchange and the Message Subject will be used as the
@@ -147,10 +132,17 @@ func NewRPCServer(cfg *rapid.Config, pm *process.ProcessManager,
 			//log.Printf("Received a message: %s", message.Body)
 			//log.Println(message)
 
-			b64CC := "" // TODO
-			message.Body = iapi.invoke(
+			// Get the X-Amz-Client-Context from the AMQP headers (if present).
+			b64CC := ""
+			if val, ok := message.Headers["X-Amz-Client-Context"]; ok { // Do lookup
+				// AMQP headers are interface types, so type assert to string.
+				b64CC = val.(string)
+			}
+
+			message.Body = invoker.invoke(
 				ctx,
-				cfg.FunctionName,
+				message.Timestamp, // May be zero or may be set by Lambda Server
+				name,
 				message.CorrelationID,
 				b64CC,
 				message.Body,
@@ -192,5 +184,5 @@ func NewRPCServer(cfg *rapid.Config, pm *process.ProcessManager,
 		log.Info("RPCServer stopped")
 	}()
 
-	return iapi
+	return srv
 }

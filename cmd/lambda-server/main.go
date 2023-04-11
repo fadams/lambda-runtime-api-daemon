@@ -17,15 +17,27 @@
 // under the License.
 //
 
-// TODO
+// Provides an implementation of an AWS Lambda Server.
+//
+// The Lambda Server implements the AWS Lambda Invoke API:
+// https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html
+// so that client applications can, either directly via the Invoke REST API or
+// via AWS SDKs like boto3, invoke Lambda Functions by calling the Invoke API,
+// which will in turn pass the invocation over AMQP-RPC to be routed to
+// the Runtime API Daemon servicing the requested Function.
+//
+// Whilst each Lambda Runtime API Daemon instance services a specific
+// Function type, the Lambda Server acts like the AWS Lambda Service,
+// accepting any FunctionName from the Invoke API request URI:
+// /2015-03-31/functions/FunctionName/invocations?Qualifier=Qualifier
+// and routing that to the required Runtime API Daemon via AMQP.
+
 package main
 
 import (
-	"fmt"
-	log "github.com/sirupsen/logrus" // Structured logging
-
 	"lambda-runtime-api-daemon/pkg/config/env"
 	"lambda-runtime-api-daemon/pkg/config/server"
+	"lambda-runtime-api-daemon/pkg/invokeapi"
 	"lambda-runtime-api-daemon/pkg/logging"
 	"lambda-runtime-api-daemon/pkg/process"
 )
@@ -34,11 +46,16 @@ func main() {
 	logging.SetLogLevel(env.Getenv("LOG_LEVEL", "INFO"))
 	cfg := server.GetConfig()
 
-	log.Info("lambda-server")
-	fmt.Println(cfg)
+	// ProcessManager manages signals.
+	pm := process.NewProcessManager()
 
-	pm := process.NewProcessManager() // Spawn/reap Lambda/Extension processes
-	//rapi := NewRuntimeAPIServer(cfg)  // Run RuntimeAPIServer in goroutine
-	//NewInvokeAPIServer(cfg, pm, rapi) // Run InvokeAPIServer in goroutine
-	pm.HandleSignals() // Handle signals, blocking until exit
+	// Run InvokeAPIServer in a goroutine and cleanly stop on exit.
+	iapi := invokeapi.NewInvokeAPIServer(
+		cfg.InvokeAPIServerURI,
+		invokeapi.NewRPCInvoker(cfg),
+	)
+	defer iapi.Close()
+
+	// Handle signals, blocking until exit
+	pm.HandleSignals()
 }

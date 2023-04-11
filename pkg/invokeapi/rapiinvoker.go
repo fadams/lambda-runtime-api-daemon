@@ -31,6 +31,7 @@ import (
 	// https://pkg.go.dev/github.com/docker/distribution/uuid
 	"github.com/docker/distribution/uuid"
 
+	"lambda-runtime-api-daemon/pkg/config/rapid"
 	"lambda-runtime-api-daemon/pkg/process"
 	"lambda-runtime-api-daemon/pkg/runtimeapi"
 )
@@ -41,8 +42,7 @@ const (
 	RFC3339Milli = "2006-01-02T15:04:05.999Z07"
 )
 
-type InvokeAPI struct {
-	close   func()
+type RAPIInvoker struct {
 	pm      *process.ProcessManager
 	rapi    *runtimeapi.RuntimeAPI
 	version string
@@ -55,6 +55,25 @@ type InvokeAPI struct {
 	report  bool
 }
 
+func NewRAPIInvoker(cfg *rapid.Config, pm *process.ProcessManager,
+	rapi *runtimeapi.RuntimeAPI) *RAPIInvoker {
+
+	invoker := &RAPIInvoker{
+		pm:      pm,
+		rapi:    rapi,
+		version: cfg.Version,
+		handler: cfg.Handler,
+		cwd:     cfg.Cwd,
+		cmd:     cfg.Cmd,
+		env:     cfg.Env,
+		timeout: cfg.Timeout,
+		memory:  cfg.Memory,
+		report:  cfg.Report,
+	}
+
+	return invoker
+}
+
 // Helper function to render timeout message for logging and response message.
 func timeoutMessage(id string, timeout float64) string {
 	return fmt.Sprintf("%s Task timed out after %.2f seconds", id, timeout)
@@ -63,7 +82,7 @@ func timeoutMessage(id string, timeout float64) string {
 // Helper function to render the timeout response JSON given a message string.
 func timeoutResponse(message string) []byte {
 	message = fmt.Sprintf("%s %s", time.Now().Format(RFC3339Milli), message)
-	return []byte(`{"errorMessage": "` + message + `"}`)
+	return []byte(`{"errorType": "TimeoutError", "errorMessage": "` + message + `"}`)
 }
 
 // Compute the duration between the supplied start time and current time,
@@ -74,44 +93,56 @@ func durationMS(start time.Time, timeout int) float64 {
 		float64(timeout*1000000000)) / float64(time.Millisecond)
 }
 
-// Invoke the named function. This method is intended to be common to all the
-// invocation "triggers" (REST, AMQP-RPC, etc.). The arguments include the
-// root/base Context, the function name, a correlation ID used to correlate
-// requests with responses which will be used as the  Runtime API "AwsRequestId"
-// https://docs.aws.amazon.com/lambda/latest/dg/runtimes-api.html
-// a (possibly empty) base64 encoded Client Context from the calling client
+// Invoke the named Function. This method is intended to be common to all the
+// invocation "triggers" (REST, AMQP-RPC, etc.).
+//
+// invoke takes as arguments a root Context, an optional timestamp (if
+// not supplied invoke should generate one), the Function name, an
+// optional correlation ID (if not supplied invoke should generate one),
+// an optional base64 client context as specified in the AWS Lambda
+// Invoke API documentation:
 // https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html#API_Invoke_RequestSyntax
-// and the request body as a byte slice.
+// and finally, invoke takes the invocation body as a byte slice.
 //
 // This method sends the request on a channel that will block until the invoked
-// function has initialised and is available to receive the request, and will
-// then block again on a response channel until the invoked function responds
-// whereupon this method will return with the function response as a byte slice.
+// Function has initialised and is available to receive the request, and will
+// then block again on a response channel until the invoked Function responds
+// whereupon this method will return with the Function response as a byte slice.
+//
 // Handlers that use this method should therefore be aware of the likelihood
 // that it might block, potentially for the full AWS_LAMBDA_FUNCTION_TIMEOUT.
-func (iapi *InvokeAPI) invoke(rctx context.Context, name string,
-	correlationID string, b64CC string, body []byte) []byte {
+func (invoker *RAPIInvoker) invoke(
+	rctx context.Context,
+	timestamp time.Time,
+	name string,
+	cid string,
+	b64CC string,
+	body []byte,
+) []byte {
+	log.Debugf("RAPIInvoker invocations: " + string(body))
 
-	log.Debugf("InvokeAPI invocations: " + string(body))
-	invokeStart := time.Now()
+	invokeStart := timestamp
+	if invokeStart.IsZero() {
+		invokeStart = time.Now()
+	}
 
 	// Use context.WithTimeout to provide a mechanism to cancel invocation
 	// requests and/or responses should the Lambda duration be exceeded.
 	// https://pkg.go.dev/context#example-WithTimeout
 	// https://ieftimov.com/posts/make-resilient-golang-net-http-servers-using-timeouts-deadlines-context-cancellation/
-	timeout := time.Duration(iapi.timeout) * time.Second
+	timeout := time.Duration(invoker.timeout) * time.Second
 	ctx, cancel := context.WithTimeout(rctx, timeout)
 	defer cancel() // Ensure cancellation when handler exits.
 
 	// Use supplied correlationID if set, otherwise generate one.
-	if correlationID == "" {
-		correlationID = uuid.Generate().String()
+	if cid == "" {
+		cid = uuid.Generate().String()
 	}
 
 	// Handling the ClientContext is a little "odd"/convoluted. According to
 	// https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html. Up to
 	// 3,583 bytes of base64-encoded data about the invoking client to pass to
-	// the function in the context object. So at this point the client should
+	// the Function in the context object. So at this point the client should
 	// have encoded the object as Base64, but as it happens the Runtime
 	// Interface Clients actually expect JSON *not* Base64 encoded JSON, so
 	// we do the Base64 decoding here.
@@ -131,17 +162,17 @@ func (iapi *InvokeAPI) invoke(rctx context.Context, name string,
 	invocation := runtimeapi.Request{
 		Response:      make(chan runtimeapi.Response, 1), // Needs to buffer one item.
 		FunctionName:  name,
-		ID:            correlationID,
+		ID:            cid,
 		ClientContext: clientContext,
 		Body:          body,
-		// The date that the function times out in Unix time milliseconds.
+		// The date that the Function times out in Unix time milliseconds.
 		// This deadline is passed to the actual Lambda being invoked as part
 		// of the Lambda context so the running Lambda will know its own deadline.
-		Deadline: invokeStart.UnixMilli() + (int64)(iapi.timeout)*1000,
+		Deadline: invokeStart.UnixMilli() + (int64)(invoker.timeout)*1000,
 	}
 
-	if iapi.report {
-		fmt.Println("START RequestId: " + correlationID + " Version: " + iapi.version)
+	if invoker.report {
+		fmt.Println("START RequestId: " + cid + " Version: " + invoker.version)
 	}
 
 	initDuration := ""
@@ -150,7 +181,7 @@ func (iapi *InvokeAPI) invoke(rctx context.Context, name string,
 	// would block it means there aren't enough concurrent Lambda handlers,
 	// so launch a new Lambda instance until max concurrency is reached.
 	select {
-	case iapi.rapi.Invocations <- invocation:
+	case invoker.rapi.Invocations <- invocation:
 	case <-ctx.Done():
 	default:
 		// The RuntimeAPIServer Init references a sync.Once instance indexed by
@@ -161,13 +192,13 @@ func (iapi *InvokeAPI) invoke(rctx context.Context, name string,
 		// a new instance if the maximum configured concurrency hasn't been
 		// reached. Any additional concurrent calls that arrive whilst
 		// waiting for the new instance to init pass through (because of the
-		// Once) and subsequently block on iapi.rapi.invocations <- invocation.
+		// Once) and subsequently block on invoker.rapi.invocations <- invocation.
 		// When the number of instances servicing requests is >= the required
 		// concurrency this default branch of the select isn't reached.
-		iapi.rapi.Init(func() {
+		invoker.rapi.Init(func() {
 			initStart := time.Now()
-			iapi.init()
-			initDurationMS := durationMS(initStart, iapi.timeout)
+			invoker.init()
+			initDurationMS := durationMS(initStart, invoker.timeout)
 			initDuration = fmt.Sprintf("Init Duration: %.2f ms\t", initDurationMS)
 		})
 
@@ -175,8 +206,8 @@ func (iapi *InvokeAPI) invoke(rctx context.Context, name string,
 		// Select on the rapi.initError chan too to check for any Lambda Init
 		// state errors and forward them to the invocation.Response chan.
 		select {
-		case iapi.rapi.Invocations <- invocation:
-		case initErrorResponse := <-iapi.rapi.InitError:
+		case invoker.rapi.Invocations <- invocation:
+		case initErrorResponse := <-invoker.rapi.InitError:
 			invocation.Response <- initErrorResponse // Forward to invocation.Response
 		case <-ctx.Done():
 		}
@@ -195,44 +226,42 @@ func (iapi *InvokeAPI) invoke(rctx context.Context, name string,
 		// the (soon to be closed) invocation.Response channel for the
 		// case where the Lambda Handler takes longer to process than
 		// our invocation timeout.
-		iapi.rapi.DeleteRequest(correlationID)
+		invoker.rapi.DeleteRequest(cid)
 
 		// Cancellation could be due to a closed client connection,
 		// so we check the error and only write timeout response if the
 		// cancellation is actually due to a timeout.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			message := timeoutMessage(correlationID, float64(iapi.timeout))
+			message := timeoutMessage(cid, float64(invoker.timeout))
 			log.Info(message)
 			response = timeoutResponse(message)
 		}
 	}
 
-	if iapi.report {
-		duration := durationMS(invokeStart, iapi.timeout)
+	if invoker.report {
+		duration := durationMS(invokeStart, invoker.timeout)
 		// TODO set the real Max Memory Used and Memory Size
 		fmt.Printf(
 			"END RequestId: %s\n"+
 				"REPORT RequestId: %s\t%sDuration: %.2f ms\t"+
 				"Billed Duration: %.f ms\t"+
 				"Memory Size: %d MB\tMax Memory Used: %d MB\t\n",
-			correlationID, correlationID, initDuration, duration,
-			math.Ceil(duration), iapi.memory, iapi.memory)
+			cid, cid, initDuration, duration,
+			math.Ceil(duration), invoker.memory, invoker.memory)
 	}
 	return response
 }
 
-func (iapi *InvokeAPI) init() {
-	log.Infof("exec '%s' (cwd=%s, handler=%s)", iapi.cmd[0], iapi.cwd, iapi.handler)
+func (invoker *RAPIInvoker) init() {
+	log.Infof("exec '%s' (cwd=%s, handler=%s)", invoker.cmd[0], invoker.cwd, invoker.handler)
 
-	cmd := iapi.pm.NewManagedProcess(iapi.cmd, iapi.cwd, iapi.env)
+	cmd := invoker.pm.NewManagedProcess(invoker.cmd, invoker.cwd, invoker.env)
 	err := cmd.Start()
 	if err != nil {
 		log.Warnf("Failed to start %v with error %v", cmd, err)
 	}
 }
 
-// Cleanly close the InvokeAPI. Delegates to a concrete implementation that
-// is assigned by the implementation specific factory method.
-func (iapi *InvokeAPI) Close() {
-	iapi.close()
+func (invoker *RAPIInvoker) Close() {
+	// RAPIInvoker doesn't need any additional clean up on exit.
 }
