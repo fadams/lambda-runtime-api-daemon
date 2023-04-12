@@ -54,9 +54,9 @@ The previous sections explained that the API Endpoints and Processes within an E
 
 The AWS _Lambda Service_ on the other hand provides the means to deploy Functions and exposes the [Invoke API](https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html) in exactly the same way as the Invoke API is exposed by the Execution Environment API Endpoints, but in the case of the Lambda Service when different FunctionNames are passed to the Invoke URI it causes the request to be routed to an Execution Environment instance appropriate to each invoked Function.
 
-For the Lambda Runtime API Daemon the (optional - and not yet fully implemented) Lambda Server performs a somewhat similar role to the Lambda Service Invoke API where it acts as an [Invoke API](https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html) endpoint and routes requests to each invoked Function.
+For the Lambda Runtime API Daemon the optional Lambda Server performs a somewhat similar role to the Lambda Service Invoke API, where it acts as an [Invoke API](https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html) endpoint and routes requests to each invoked Function.
 
-The reason the Lambda Server is optional is because if AMQP-RPC is used as the Invocation API then the routing is performed entirely by the AMQP broker (e.g. RabbitMQ) as FunctionNames correspond to AMQP queues and AMQP request messages simply specify the FunctionName as the AMQP Routing Key when publishing the message to the default direct exchange, which in turn will deliver the message to the appropriate queue. For the case of the HTTP [Invoke API](https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html), the Lambda Server component simply acts as an HTTP to AMQP proxy and will extract the FunctionName from the HTTP request URI and publish the request as an AMQP message using the extracted FunctionName as the Routing Key.
+The reason the Lambda Server is optional is because if AMQP-RPC is used as the Invocation API transport then the routing is performed entirely by the AMQP broker (e.g. RabbitMQ). With AMQP-RPC invocations the FunctionNames correspond to AMQP queues and the AMQP request messages simply specify the FunctionName as the AMQP Routing Key when publishing the message to the default direct exchange, which in turn will deliver the message to the appropriate queue. For the case of the HTTP [Invoke API](https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html) the Lambda Server component simply behaves as an HTTP to AMQP proxy and will extract the FunctionName from the HTTP request URI and publish the request as an AMQP message using the extracted FunctionName as the Routing Key.
 
 Using a messaging service like AMQP as a "Function router" offers a number of advantages, including being relatively "transparent" as it requires no registration mechanism. When a Function is deployed it declares a queue with the broker if one doesn't already exist and multiple instances can share a queue for simple load balancing. Using a messaging service also provides a degree of elastic request buffering and provides the queueing needed by [asynchronous Lambda invocations](https://docs.aws.amazon.com/lambda/latest/dg/invocation-async.html).
 
@@ -88,8 +88,9 @@ The Lambda Runtime API Daemon can be used in place of the [AWS Lambda Runtime In
 Some more concrete usage examples are included in the [examples](examples) directory and a good place to start is the example [echo lambda and clients](examples/echo).
 
 ## Configuration
-The primary means of configuring the Lambda Runtime API Daemon is through environment variables.
+The primary means of configuring the Lambda Runtime API Daemon and Lambda Server is through environment variables.
 
+#### Lambda Runtime API Daemon
 Currently supported environment variables specific to the Lambda Runtime API Daemon are:
 
 * LOG_LEVEL: The log level (PANIC FATAL ERROR WARNING INFO DEBUG TRACE). The level is case insensitive and the default value is INFO.
@@ -111,3 +112,15 @@ The Lambda Runtime API Daemon also supports a number of Lambda environment varia
 * AWS_LAMBDA_FUNCTION_VERSION: The version of the function being executed. The default value is $LATEST.
 * AWS_LAMBDA_FUNCTION_TIMEOUT: The Lambda function execution timeout. The default value is 3 seconds as per the [AWS Lambda default value](https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html#configuration-timeout-console).
 * AWS_LAMBDA_FUNCTION_IDLETIMEOUT: The Lambda function idle timeout. N.B. This value isn't configurable with real AWS Lambda. After a period of inactivity unused/underused Lambda functions will be disconnected and will exit. This also includes instances that were started to service a period of higher concurrency requirements where the required concurrency level has since reduced. The default value is 1800 seconds (30 minutes e.g. twice the maximum AWS Lambda function timeout).
+
+#### Lambda Server
+Currently supported environment variables specific to the Lambda Server are:
+
+* LOG_LEVEL: The log level (PANIC FATAL ERROR WARNING INFO DEBUG TRACE). The level is case insensitive and the default value is INFO.
+* INVOKE_API_HOST: The Invoke API address, default is 0.0.0.0.
+* PORT: The Invoke API listen port, default is 8080.
+* AMQP_URI: The connection URI to an AMQP message broker (e.g. RabbitMQ). The URI is of the format `amqp://username:password@host:port/virtual_host?key=value&key=value`, the default value is: `amqp://guest:guest@localhost:5672?connection_attempts=20&retry_delay=10&heartbeat=0`. Note that the default `localhost` address won't behave in the way that may be expected if the Lambda Server is deployed in a container, as localhost will refer to the *container's* localhost, which is unlikely to be where the AMQP broker is bound to. In practice therefore, for container deployments the AMQP_URI environment variable most likely will need to be *explicitly* set with the required broker URI.
+
+In addition the Lambda environment variable AWS_LAMBDA_FUNCTION_TIMEOUT is supported, though its behaviour is different to that of the Daemon as the Lambda Server can't know the timeouts set for each Lambda as they are decoupled by a messaging fabric. In most cases the Lambdas will themselves send a response message when they time out which will simply be returned by the Lambda Server, but we also have a fail safe timeout here for cases where a Lambda fails between receiving a request and sending a response. This timeout needs to be higher than the highest expected legitimate Lambda timeout. We set the default to be 1800 seconds (30 minutes) as that is twice the AWS Lambda max timeout of 15 minutes and also happens to be the RabbitMQ ack timeout where the broker closes a channel if a message acknowledge hasn't occurred within 30 minutes of the message being delivered.
+
+Invocation requests to non-existent or non-deployed Lambdas are identified quickly and are not affected by AWS_LAMBDA_FUNCTION_TIMEOUT as requests are published with Mandatory set true, so if they are unroutable they will be returned by the broker. The purpose of this timeout is to cater for cases where the requests have actually succeeded, but the Lambda fails to respond at all.
