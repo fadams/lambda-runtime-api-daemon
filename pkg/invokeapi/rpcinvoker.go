@@ -136,7 +136,7 @@ func NewRPCInvoker(cfg *server.Config) *RPCInvoker {
 				responses <- message.Body
 			} else {
 				invoker.Unlock() // Need explicit Unlock here.
-				log.Infof("RPCInvoker Request: %v has no matching requestor", cid)
+				log.Debugf("RPCInvoker Request: %v has no matching requestor", cid)
 			}
 		}
 
@@ -194,7 +194,8 @@ func NewRPCInvoker(cfg *server.Config) *RPCInvoker {
 // an optional base64 client context as specified in the AWS Lambda
 // Invoke API documentation:
 // https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html#API_Invoke_RequestSyntax
-// and finally, invoke takes the invocation body as a byte slice.
+// the AWS X-Ray Tracing Header from the invocation (if present)
+// https://docs.aws.amazon.com/xray/latest/devguide/xray-concepts.html#xray-concepts-tracingheader and finally, invoke takes the invocation body as a byte slice.
 //
 // This method sends the request by publishing an AMQP message with the
 // RoutingKey (Message Subject) set to the Function name. The method then
@@ -212,11 +213,10 @@ func (invoker *RPCInvoker) invoke(
 	timestamp time.Time,
 	name string,
 	cid string,
-	b64CC string,
+	b64CC string, // Base64 Client Context
+	xray string, // The AWS X-Ray Tracing Header from the invocation
 	body []byte,
 ) []byte {
-	log.Debugf("RPCInvoker invocations: " + string(body))
-
 	// This timestamp is set here and passed in the AMQP-RPC request message
 	// Timestamp. The Lambda Runtime API Daemon will use the RPC Timestamp
 	// if set, which will allow any delays due to the request queue growing
@@ -255,8 +255,17 @@ func (invoker *RPCInvoker) invoke(
 	// The Lambda Server's RPCInvoker just passes the b64CC directly to the
 	// Lambda Runtime API Daemon, storing it in the X-Amz-Client-Context AMQP
 	// header for consistency with the HTTP header used in the AWS Invoke API.
-	if b64CC != "" {
+	// Similarly, if the xray tracing arg is set the RPCInvoker just passes
+	// it through using the X-Amzn-Trace-Id AMQP header for consistency.
+	if b64CC != "" && xray != "" {
+		rpcRequest.Headers = map[string]interface{}{
+			"X-Amz-Client-Context": b64CC,
+			"X-Amzn-Trace-Id":      xray,
+		}
+	} else if b64CC != "" {
 		rpcRequest.Headers = map[string]interface{}{"X-Amz-Client-Context": b64CC}
+	} else if xray != "" {
+		rpcRequest.Headers = map[string]interface{}{"X-Amzn-Trace-Id": xray}
 	}
 
 	invoker.producer.Send(rpcRequest)

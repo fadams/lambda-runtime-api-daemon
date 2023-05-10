@@ -62,6 +62,20 @@ func NewInvokeAPIServer(uri string, invoker Invoker) *InvokeAPIServer {
 		// Base64 encoded Client Context as sent from Client, will often be empty.
 		b64CC := headers.Get("X-Amz-Client-Context")
 
+		// Get the AWS X-Ray Tracing Header from the invocation (if present)
+		// https://docs.aws.amazon.com/xray/latest/devguide/xray-concepts.html#xray-concepts-tracingheader
+		// TODO The only tracing that is _reliably_ aupported in AWS proper is
+		// X-Ray, and it's not yet totally clear how one might use Jaeger or
+		// even Open Telemetry. This needs investigation. It's possible that
+		// AWS support additional Open Telemetry headers and I *believe* that
+		// it is possible to propagate Open Telemetry spans via X-Ray as per:
+		// https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/propagator/opentelemetry-propagator-aws-xray
+		// https://github.com/open-telemetry/opentelemetry-js-contrib/tree/main/propagators/opentelemetry-propagator-aws-xray
+		// https://github.com/open-telemetry/opentelemetry-go-contrib/tree/main/propagators/aws
+		// https://betterprogramming.pub/trace-context-propagation-with-opentelemetry-b8816f2f065e
+		// For now just ensure the X-Amz-Client-Context header is passed through.
+		xray := headers.Get("X-Amzn-Trace-Id")
+
 		if r.Body != nil {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -69,7 +83,7 @@ func NewInvokeAPIServer(uri string, invoker Invoker) *InvokeAPIServer {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			w.Write(invoker.invoke(r.Context(), t, name, correlationID, b64CC, body))
+			w.Write(invoker.invoke(r.Context(), t, name, correlationID, b64CC, xray, body))
 		}
 	}
 

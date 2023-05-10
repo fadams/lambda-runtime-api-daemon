@@ -139,12 +139,23 @@ func NewRPCServer(uri string, name string, concurrency int, invoker Invoker) *In
 				b64CC = val.(string)
 			}
 
+			// Get the X-Amzn-Trace-Id from the AMQP headers (if present).
+			// See comments in invokeapiserver.go about usage of the
+			// AWS X-Ray Tracing Header and approaches for propagating
+			// Open Telemetry spans via X-Ray.
+			xray := ""
+			if val, ok := message.Headers["X-Amzn-Trace-Id"]; ok { // Do lookup
+				// AMQP headers are interface types, so type assert to string.
+				xray = val.(string)
+			}
+
 			message.Body = invoker.invoke(
 				ctx,
 				message.Timestamp, // May be zero or may be set by Lambda Server
 				name,
 				message.CorrelationID,
 				b64CC,
+				xray,
 				message.Body,
 			)
 			message.Subject = message.ReplyTo

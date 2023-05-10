@@ -37,7 +37,8 @@ import (
 // an optional base64 client context as specified in the AWS Lambda
 // Invoke API documentation:
 // https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html#API_Invoke_RequestSyntax
-// and finally, invoke takes the invocation body as a byte slice.
+// the AWS X-Ray Tracing Header from the invocation (if present)
+// https://docs.aws.amazon.com/xray/latest/devguide/xray-concepts.html#xray-concepts-tracingheader and finally, invoke takes the invocation body as a byte slice.
 //
 // invoke will block and return a byte slice representing the response,
 // so it is important that any server handlers that might call invoke
@@ -51,7 +52,8 @@ type Invoker interface {
 		timestamp time.Time,
 		name string,
 		cid string,
-		b64CC string,
+		b64CC string, // Base64 Client Context
+		xray string, // The AWS X-Ray Tracing Header from the invocation
 		body []byte,
 	) []byte
 	Close()

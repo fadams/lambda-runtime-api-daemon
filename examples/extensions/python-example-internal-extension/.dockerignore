@@ -1,0 +1,9 @@
+
+# First exclude everything
+**
+*.*
+
+# Then explicitly allowlist what is required
+!lambda_function.py
+!lambda-entrypoint.sh
+!requirements.txt

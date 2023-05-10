@@ -39,26 +39,43 @@ import (
 func NewRuntimeAPIServer(cfg *rapid.Config, pm *process.ProcessManager) *RuntimeAPI {
 	rapi := &RuntimeAPI{
 		pm:              pm,
+		extensions:      NewExtensionsAPI(cfg),
 		Invocations:     make(chan Request),
 		InitError:       make(chan Response, 1), // Needs to buffer one item.
 		pendingRequests: make(map[string]chan Response),
-		reset:           make(chan struct{}, 1), // Needs to buffer one item.
+		shutdown:        make(chan struct{}, 1), // Needs to buffer one item.
 		initialisers:    make([]sync.Once, cfg.MaxConcurrency),
 		idleTimeout:     cfg.IdleTimeout,
 	}
-	pm.SetRegisterHandler(rapi.RegisterLambda)
-	pm.SetUnregisterHandler(rapi.UnregisterLambda)
+	pm.SetRegisterHandler(rapi.RegisterLambdaRuntime)
+	pm.SetUnregisterHandler(rapi.UnregisterLambdaRuntime)
 
 	// Create AWS Lambda Runtime API Server and API routes.
 	rapiRouter := chi.NewRouter()
+
+	// Runtime API routes.
 	rapiRouter.HandleFunc("/2018-06-01/runtime/invocation/next", rapi.next)
 	rapiRouter.HandleFunc("/2018-06-01/runtime/invocation/{id}/response", rapi.response)
 	rapiRouter.HandleFunc("/2018-06-01/runtime/init/error", rapi.initerror)
 	// Use the rapi.response handler to handle invocation error too.
 	rapiRouter.HandleFunc("/2018-06-01/runtime/invocation/{id}/error", rapi.response)
+
+	// Extensions API routes.
+	rapiRouter.HandleFunc("/2020-01-01/extension/register", rapi.extensions.register)
+	rapiRouter.HandleFunc("/2020-01-01/extension/event/next", rapi.extensions.next)
+	//rapiRouter.HandleFunc("/2020-01-01/extension/init/error", rapi.extensions.initerror)
+	//rapiRouter.HandleFunc("/2020-01-01/extension/exit/error", rapi.extensions.exiterror)
 	server := &http.Server{
 		Addr:    cfg.RuntimeAPIServerURI, // Default is 127.0.0.1:9001
 		Handler: rapiRouter,
+	}
+	if rapi.extensions.EventsEnabled() && cfg.MaxConcurrency > 1 {
+		// If Extensions are enabled set the ConnState handler to trigger
+		// a method that maps the remote address, e.g. the address that
+		// the Extensions use to call the Extensions API, to Extension.
+		// "handles". We can use the Extension's pid and pgid to associate
+		// the Extension instances with the appropriate Runtime instances.
+		server.ConnState = rapi.extensions.MapRemoteAddrToExtensions
 	}
 
 	// Concrete close implementation cleanly calls http.Server.Shutdown()

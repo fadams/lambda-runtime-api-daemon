@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime/debug"
 	"sync"
 	// According to https://pkg.go.dev/syscall the syscall package is deprecated
 	// and callers should use the corresponding package in the golang.org/x/sys
@@ -72,7 +73,7 @@ func NewProcessManager() *ProcessManager {
 }
 
 func (pm *ProcessManager) NewManagedProcess(
-	args []string, cwd string, env []string) *ManagedProcess {
+	args []string, cwd string, env []string, pgid int) *ManagedProcess {
 
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = cwd
@@ -80,10 +81,11 @@ func (pm *ProcessManager) NewManagedProcess(
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	// Set child process group ID to the new child's process ID.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Setpgid sets the process group ID of the child to Pgid,
+	// or, if Pgid == 0, to the new child's process ID.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pgid: pgid, Setpgid: true}
 
-	return &ManagedProcess{cmd, pm}
+	return &ManagedProcess{cmd, pm, pgid}
 }
 
 func (pm *ProcessManager) SetRegisterHandler(handler func(pid int, nproc int)) {
@@ -104,14 +106,28 @@ func (pm *ProcessManager) Register(mp *ManagedProcess) {
 }
 
 // Delete deletes the ManagedProcess for the specified pid from the
-// ProcessManager. Note that Delete() *does not* terminate the proces, it
-// simply "unmanages" it and Delete() would typically be called after
-// successfully waiting (e.g. by calling Wait4) for the process to terminate.
-func (pm *ProcessManager) Delete(pid int) {
+// ProcessManager. Note that Unregister() *does not*, in of itself, terminate
+// the process specified by the supplied pid, it simply "unmanages" it
+// and Unregister() would typically be called after successfully waiting (e.g.
+// by calling Wait4) for the process to terminate. However, if the
+// process specified by the pid is a ManagedProcess calling Terminate()
+// on it sends the signal to its associated *process group* thus signalling
+// "peer" processes. This mechanism allows Extensions to be terminated
+// when a Lambda Runtime instance is terminated for exceeding idle timeout.
+func (pm *ProcessManager) Unregister(pid int) {
 	pm.Lock() // Need to Lock() rather than RLock() as we are mutating.
 	defer pm.Unlock()
-	delete(pm.processes, pid)
-	pm.unregister(pid, len(pm.processes))
+	// Do lookup to check that the supplied pid actually is a ManagedProcess
+	// as we don't want to call unregister if that's not the case.
+	if mp, ok := pm.processes[pid]; ok {
+		//log.Infof("Unregister called on Managed Process PID %d", pid)
+		// Sent SIGTERM to all processes in the ManagedProcesses process group
+		mp.Terminate() // TODO Kill processes that fail to Terminate
+		delete(pm.processes, pid)
+		pm.unregister(pid, len(pm.processes))
+	} /* else {
+		log.Infof("Unregister called on Unmanaged Process PID %d", pid)
+	}*/
 }
 
 // Values returns a slice the values of the map m. The values will be in an
@@ -129,9 +145,9 @@ func Values[M ~map[K]V, K comparable, V any](m M) []V {
 
 // Returns a slice of ManagedProcess. This is a concurrent-safe wrapper
 // for ManagedProcess Values() as we want to be able to iterate in a way
-// where iterations could result in Delete() being called, for example
+// where iterations could result in Unregister() being called, for example
 // TerminateAll() or KillAll() could result in SIGCHLD and the handler for
-// that will call Delete() for a given pid. Creating the slice of values
+// that will call Unregister() for a given pid. Creating the slice of values
 // needs to be concurrent-safe, but the slice itself does not.
 func (pm *ProcessManager) ManagedProcesses() []*ManagedProcess {
 	pm.RLock()
@@ -153,10 +169,38 @@ func (pm *ProcessManager) KillAll() {
 	}
 }
 
+// Given a remote address used by a Lambda Runtime process to connect to the
+// Runtime API next API method look up the pid of the Runtime process.
+// We first get a slice of "candidate" pids (the pids of the ManagedProcesses)
+// and if that isn't empty find the TCP socket inode that matches the address
+// from /proc/net/tcp then use the candidate pids to iterate /proc/<PID>/fd
+// to find the pid that matches the TCP socket inode value.
+func (pm *ProcessManager) FindPidFromAddress(address string) int {
+	// Get the pids of all the ManagedProcesses
+	var pids []int
+	pm.RLock()
+	for k, _ := range pm.processes { // Get the keys (pids) from processes map
+		pids = append(pids, k)
+	}
+	pm.RUnlock()
+
+	if len(pids) == 0 {
+		return 0
+	} else {
+		return FindPidFromInode(pids, FindTCPInodeFromAddress(address))
+	}
+}
+
 // Handle termination signals and SIGCHLD. The behaviour here is to forward
 // termination signals to any child processes and if the signal is SIGCHLD
 // call Wait4 to reap the process to prevent them turning into zombies.
 func (pm *ProcessManager) HandleSignals() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("%s\n%v", r, string(debug.Stack()))
+		}
+	}()
+
 	// When a termination signal (SIGINT, SIGTERM, etc.) occurs we will try
 	// to cleanly shut down ManagedProcesses, handling subsequent SIGCHLD
 	// signals that result in calls to Wait4 to reap the process. It is,
@@ -199,7 +243,7 @@ loop:
 					}
 
 					if err == nil {
-						pm.Delete(wpid) // De-register ManagedProcess
+						pm.Unregister(wpid) // Unregister ManagedProcess
 
 						//fmt.Println("len(pm.processes) ", len(pm.processes))
 						//fmt.Println(pm.processes)
@@ -242,10 +286,18 @@ loop:
 
 type ManagedProcess struct {
 	*exec.Cmd
-	pm *ProcessManager
+	pm   *ProcessManager
+	pgid int // Process group ID of the ManagedProcess
 }
 
-// Start starts the specified command but does not wait for it to complete.
+// Get the pid of the ManagedProcess. Note that the pid will *not* be set
+// after calling NewManagedProcess(), rather it is only set after calling
+// Start()/StartUnmanaged() as it is those that actually launch the process.
+func (mp *ManagedProcess) Pid() int {
+	return mp.Cmd.Process.Pid
+}
+
+// Start starts the command but does not wait for it to complete.
 // If cmd.Start returns successfully, the cmd.Process field will be set.
 // After a successful call to Start the ManagedProcess will register itself
 // with the parent ProcessManager, keyed by cmd.Process.Pid. ManagedProcesses
@@ -258,32 +310,55 @@ func (mp *ManagedProcess) Start() error {
 	if err := mp.Cmd.Start(); err != nil {
 		return err
 	}
+
+	// ManagedProcesses are created with pgid set to zero so that the pgid
+	// of the actual process is set to its pid when exec'ed. So we update
+	// the pgid attribute to reflect the pgid of the newly created process.
+	if mp.pgid == 0 {
+		pgid, err := syscall.Getpgid(mp.Pid())
+		if err == nil {
+			mp.pgid = pgid
+		} else {
+			log.Warnf("Unable to Getpgid(%d)", mp.Pid())
+			mp.pgid = mp.Pid() // Fall back to setting pgid to pid
+		}
+	}
 	mp.pm.Register(mp)
 	return nil
 }
 
-// Send SIGTERM to the ManagedProcess
-func (mp *ManagedProcess) Terminate() {
-	// Try to send the signal to the process group ID to ensure all related
-	// processes are sent the signal, if that errors just send to the process.
-	pgid, err := syscall.Getpgid(mp.Cmd.Process.Pid)
-	if err == nil {
-		// A negative pid sends the signal to all in the process group.
-		syscall.Kill(-pgid, syscall.SIGTERM)
-	} else {
-		mp.Cmd.Process.Signal(syscall.SIGTERM)
-	}
+// StartUnmanaged starts the command but does not wait for it to complete.
+// If cmd.Start returns successfully, the cmd.Process field will be set.
+// Unlike the Start() method, after a successful call to StartUnmanaged the
+// ManagedProcess will *not* register itself with the parent ProcessManager.
+// The intention is that Lambda Runtime Processes are "managed" i.e.
+// registered with the ProcessManager but Extensions are not managed by
+// the ProcessManager, rather they are run *in the same process group* as
+// the (managed) Runtime Process so that their lifecycles may be tied to
+// the lifecycle of the process group. So if a ManagedProcess is terminated
+// or killed the signal is applied to the process group, which will
+// therefore affect all the processes in the same process group as the
+// ManagedProcess. In other words ManagedProcesses manage their peers.
+func (mp *ManagedProcess) StartUnmanaged() error {
+	return mp.Cmd.Start() // Delegate to Cmd.Start
 }
 
-// Send SIGKILL to the ManagedProcess
+func (mp *ManagedProcess) Stop() {
+	mp.Cmd.Process.Signal(syscall.SIGSTOP)
+}
+
+func (mp *ManagedProcess) Continue() {
+	mp.Cmd.Process.Signal(syscall.SIGCONT)
+}
+
+// Send SIGTERM to the ManagedProcess and associated process group
+func (mp *ManagedProcess) Terminate() {
+	// A negative pid value to kill sends the signal to all in the process group.
+	syscall.Kill(-mp.pgid, syscall.SIGTERM)
+}
+
+// Send SIGKILL to the ManagedProcess and associated process group
 func (mp *ManagedProcess) Kill() {
-	// Try to send the signal to the process group ID to ensure all related
-	// processes are sent the signal, if that errors just send to the process.
-	pgid, err := syscall.Getpgid(mp.Cmd.Process.Pid)
-	if err == nil {
-		// A negative pid sends the signal to all in the process group.
-		syscall.Kill(-pgid, syscall.SIGKILL)
-	} else {
-		mp.Cmd.Process.Signal(syscall.SIGKILL)
-	}
+	// A negative pid value to kill sends the signal to all in the process group.
+	syscall.Kill(-mp.pgid, syscall.SIGKILL)
 }

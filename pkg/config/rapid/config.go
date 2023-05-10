@@ -136,6 +136,8 @@ func GetConfig() *Config {
 
 		if len(args) > 2 { // Assume last arg is the handler
 			config.Handler = args[len(args)-1]
+		} else { // Otherwise fall back to _HANDLER environment variable if set
+			config.Handler = env.Getenv("_HANDLER", "")
 		}
 	} else { // If any of the candidate bootstrap files exist set Cmd to that
 		candidates := []string{"/var/task/bootstrap", "/opt/bootstrap",

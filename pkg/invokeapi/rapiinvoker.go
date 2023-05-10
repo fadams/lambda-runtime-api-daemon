@@ -26,6 +26,7 @@ import (
 	"fmt"
 	log "github.com/sirupsen/logrus" // Structured logging
 	"math"
+	"path"
 	"time"
 
 	// https://pkg.go.dev/github.com/docker/distribution/uuid
@@ -102,7 +103,8 @@ func durationMS(start time.Time, timeout int) float64 {
 // an optional base64 client context as specified in the AWS Lambda
 // Invoke API documentation:
 // https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html#API_Invoke_RequestSyntax
-// and finally, invoke takes the invocation body as a byte slice.
+// the AWS X-Ray Tracing Header from the invocation (if present)
+// https://docs.aws.amazon.com/xray/latest/devguide/xray-concepts.html#xray-concepts-tracingheader and finally, invoke takes the invocation body as a byte slice.
 //
 // This method sends the request on a channel that will block until the invoked
 // Function has initialised and is available to receive the request, and will
@@ -116,11 +118,10 @@ func (invoker *RAPIInvoker) invoke(
 	timestamp time.Time,
 	name string,
 	cid string,
-	b64CC string,
+	b64CC string, // Base64 Client Context
+	xray string, // The AWS X-Ray Tracing Header from the invocation
 	body []byte,
 ) []byte {
-	log.Debugf("RAPIInvoker invocations: " + string(body))
-
 	invokeStart := timestamp
 	if invokeStart.IsZero() {
 		invokeStart = time.Now()
@@ -164,6 +165,7 @@ func (invoker *RAPIInvoker) invoke(
 		FunctionName:  name,
 		ID:            cid,
 		ClientContext: clientContext,
+		XRay:          xray,
 		Body:          body,
 		// The date that the Function times out in Unix time milliseconds.
 		// This deadline is passed to the actual Lambda being invoked as part
@@ -178,7 +180,7 @@ func (invoker *RAPIInvoker) invoke(
 	initDuration := ""
 	// If the invocation can be sent without blocking, or ctx.Done(), this
 	// select will finish immediately. However, if writing the invocation
-	// would block it means there aren't enough concurrent Lambda handlers,
+	// would block it means there aren't enough concurrent Lambda Runtimes,
 	// so launch a new Lambda instance until max concurrency is reached.
 	select {
 	case invoker.rapi.Invocations <- invocation:
@@ -199,7 +201,7 @@ func (invoker *RAPIInvoker) invoke(
 			initStart := time.Now()
 			invoker.init()
 			initDurationMS := durationMS(initStart, invoker.timeout)
-			initDuration = fmt.Sprintf("Init Duration: %.2f ms\t", initDurationMS)
+			initDuration = fmt.Sprintf("Init Duration: %.2f ms", initDurationMS)
 		})
 
 		// After launching a new Lambda instance do a blocking invocation send.
@@ -243,7 +245,7 @@ func (invoker *RAPIInvoker) invoke(
 		// TODO set the real Max Memory Used and Memory Size
 		fmt.Printf(
 			"END RequestId: %s\n"+
-				"REPORT RequestId: %s\t%sDuration: %.2f ms\t"+
+				"REPORT RequestId: %s\t%s \tDuration: %.2f ms\t"+
 				"Billed Duration: %.f ms\t"+
 				"Memory Size: %d MB\tMax Memory Used: %d MB\t\n",
 			cid, cid, initDuration, duration,
@@ -255,10 +257,44 @@ func (invoker *RAPIInvoker) invoke(
 func (invoker *RAPIInvoker) init() {
 	log.Infof("exec '%s' (cwd=%s, handler=%s)", invoker.cmd[0], invoker.cwd, invoker.handler)
 
-	cmd := invoker.pm.NewManagedProcess(invoker.cmd, invoker.cwd, invoker.env)
-	err := cmd.Start()
-	if err != nil {
-		log.Warnf("Failed to start %v with error %v", cmd, err)
+	// Start the Lambda Runtime Process
+	// Note that as per the AWS Extensions API documentation:
+	// https://docs.aws.amazon.com/lambda/latest/dg/runtimes-extensions-api.html#runtimes-extensions-api-reg
+	// After each extension registers, Lambda starts the Runtime init phase.
+	// https://lumigo.io/wp-content/uploads/2020/10/Picture3-How-AWS-Lambda-Extensions-change-the-Lambda-lifecycle.png
+	// So, the Runtime init phase starts *after* all the Extensions have
+	// registered, however we want Extensions to run in the same process group
+	// as the Runtime process so we must start that first to get its pid.
+	// Therefore, if External Extensions are enabled we will stop the Runtime
+	// process until the Extensions have registered then continue it afterwards.
+	runtime := invoker.pm.NewManagedProcess(invoker.cmd,
+		invoker.cwd, invoker.env, 0)
+	if err := runtime.Start(); err != nil {
+		log.Warnf("Failed to start %v with error %v", runtime, err)
+	}
+
+	// As per comment above, the pid of Runtime Process is the process group ID.
+	pgid := runtime.Pid()
+
+	// Start External Extensions, if any, which are run as independent processes.
+	eapi := invoker.rapi.Extensions()
+	if len(eapi.Paths()) > 0 {
+		runtime.Stop() // Pause Runtime process until Extensions have registered.
+
+		for _, p := range eapi.Paths() {
+			extension := invoker.pm.NewManagedProcess([]string{p},
+				invoker.cwd, invoker.env, pgid)
+			if err := extension.StartUnmanaged(); err == nil {
+				eapi.Add(path.Base(extension.Cmd.Path), pgid)
+			} else {
+				log.Warnf("Failed to start %v with error %v", extension, err)
+			}
+		}
+
+		// Block until External Extensions signal that they have registered.
+		eapi.IndexedByPgid(pgid).AwaitExtensionRegistration()
+
+		runtime.Continue() // Resume Runtime process.
 	}
 }
 
