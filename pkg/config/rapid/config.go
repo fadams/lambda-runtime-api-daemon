@@ -184,7 +184,7 @@ func GetConfig() *Config {
 	// Enumerate system (container) environment variables and apply a
 	// deny list, then add the allowed env vars to config.Env.
 	deny := map[string]bool{"PWD": true, "TERM": true, "SHLVL": true, "_": true,
-		"AWS_LAMBDA_FUNCTION_NAME": true}
+		"AWS_LAMBDA_FUNCTION_NAME": true, "AMQP_URI": true}
 	for _, element := range os.Environ() {
 		// Split only by first = to cater for env values that may contain an =
 		kv := strings.SplitN(element, "=", 2)

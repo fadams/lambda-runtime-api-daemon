@@ -27,6 +27,7 @@ import (
 	log "github.com/sirupsen/logrus" // Structured logging
 	"math"
 	"path"
+	"strconv"
 	"time"
 
 	// https://pkg.go.dev/github.com/docker/distribution/uuid
@@ -267,8 +268,24 @@ func (invoker *RAPIInvoker) init() {
 	// as the Runtime process so we must start that first to get its pid.
 	// Therefore, if External Extensions are enabled we will stop the Runtime
 	// process until the Extensions have registered then continue it afterwards.
-	runtime := invoker.pm.NewManagedProcess(invoker.cmd,
-		invoker.cwd, invoker.env, 0)
+	//
+	// In addition to running Runtimes and any associated External Extensions
+	// in the same process group we also pass an "_INSTANCE" environment
+	// variable. This is to cater for cases where MAX_CONCURRENCY is set > 1
+	// and we have extensions that use some in-band IPC, like setting up
+	// an HTTP server or named pipes. In "real" AWS managed Lambda one might
+	// simply use an arbitrary port like 1234, as the Lambda Service always
+	// has concurrency of one inside a given Execution Environment, but if
+	// MAX_CONCURRENCY is set > 1 for the Runtime API Daemon then multiple
+	// Runtime and multiple Extension instances will be launched which could
+	// cause port collisions, so using strconv.Atoi(os.Getenv("_INSTANCE"))
+	// or the equivalent for other languages in the Lambda and adding that
+	// to the base port number will allow multiple Extension instances to
+	// avoid "collisions" fairly easily in a way that will also work well
+	// when running on the AWS Lambda service.
+	env := invoker.env
+	env = append(env, "_INSTANCE="+strconv.Itoa(invoker.pm.Size()))
+	runtime := invoker.pm.NewManagedProcess(invoker.cmd, invoker.cwd, env, 0)
 	if err := runtime.Start(); err != nil {
 		log.Warnf("Failed to start %v with error %v", runtime, err)
 	}
@@ -283,7 +300,7 @@ func (invoker *RAPIInvoker) init() {
 
 		for _, p := range eapi.Paths() {
 			extension := invoker.pm.NewManagedProcess([]string{p},
-				invoker.cwd, invoker.env, pgid)
+				invoker.cwd, env, pgid)
 			if err := extension.StartUnmanaged(); err == nil {
 				eapi.Add(path.Base(extension.Cmd.Path), pgid)
 			} else {

@@ -110,7 +110,7 @@ func (pm *ProcessManager) Register(mp *ManagedProcess) {
 // the process specified by the supplied pid, it simply "unmanages" it
 // and Unregister() would typically be called after successfully waiting (e.g.
 // by calling Wait4) for the process to terminate. However, if the
-// process specified by the pid is a ManagedProcess calling Terminate()
+// process specified by the pid *is* a ManagedProcess calling Terminate()
 // on it sends the signal to its associated *process group* thus signalling
 // "peer" processes. This mechanism allows Extensions to be terminated
 // when a Lambda Runtime instance is terminated for exceeding idle timeout.
@@ -128,6 +128,15 @@ func (pm *ProcessManager) Unregister(pid int) {
 	} /* else {
 		log.Infof("Unregister called on Unmanaged Process PID %d", pid)
 	}*/
+}
+
+// Return the Size/Length of the ProcessManager, e.g. the number of
+// ManagedProcesses that it contains. This will equate to the number of
+// Lambda Runtime instances running in the Execution Environment.
+func (pm *ProcessManager) Size() int {
+	pm.RLock()
+	defer pm.RUnlock()
+	return len(pm.processes)
 }
 
 // Values returns a slice the values of the map m. The values will be in an
