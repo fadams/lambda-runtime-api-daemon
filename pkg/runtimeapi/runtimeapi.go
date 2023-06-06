@@ -161,7 +161,7 @@ func (rapi *RuntimeAPI) next(w http.ResponseWriter, r *http.Request) {
 			//     0 ms – A function with no registered extensions
 			//     500 ms – A function with a registered internal extension
 			//     2,000 ms – A function with one or more registered external extensions
-			log.Infof("Terminating idle Lambda Runtime pid: %d", pid)
+			log.Infof("Terminating idle Lambda Runtime: pid %d", pid)
 			if len(rapi.extensions.Paths()) > 0 { // Registered External Extensions
 				time.Sleep(1700 * time.Millisecond)
 				syscall.Kill(pid, syscall.SIGTERM)
@@ -177,8 +177,10 @@ func (rapi *RuntimeAPI) next(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// If no Extensions are registered Lambda ends Runtime with SIGKILL.
 			if pid := rapi.pm.FindPidFromAddress(r.RemoteAddr); pid > 0 {
-				log.Infof("Terminating idle Lambda Runtime pid: %d", pid)
-				syscall.Kill(pid, syscall.SIGKILL)
+				if pgid, err := syscall.Getpgid(pid); err == nil {
+					log.Infof("Terminating idle Lambda Runtime: pgid %d", pgid)
+					syscall.Kill(-pgid, syscall.SIGKILL)
+				}
 			}
 		}
 	}
@@ -300,14 +302,13 @@ func (rapi *RuntimeAPI) response(w http.ResponseWriter, r *http.Request) {
 
 	correlationID := chi.URLParam(r, "id")
 
+	w.WriteHeader(http.StatusAccepted)
 	rapi.Lock()
 	// Don't use defer rapi.Unlock() here as we want critical section small.
 	// Concurrent-safe lookup the invocation Response channel then delete entry.
 	if responses, ok := rapi.pendingRequests[correlationID]; ok { // Do lookup
 		delete(rapi.pendingRequests, correlationID) // Delete entry if present.
-		// Only hold the lock for as long as necessary.
-		rapi.Unlock()
-		w.WriteHeader(http.StatusAccepted)
+		rapi.Unlock()                               // Only hold the lock for as long as necessary.
 
 		if r.Body != nil {
 			body, _ := io.ReadAll(r.Body)

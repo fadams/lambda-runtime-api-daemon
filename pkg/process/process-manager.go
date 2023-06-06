@@ -179,19 +179,24 @@ func (pm *ProcessManager) KillAll() {
 }
 
 // Given a remote address used by a Lambda Runtime process to connect to the
-// Runtime API next API method look up the pid of the Runtime process.
-// We first get a slice of "candidate" pids (the pids of the ManagedProcesses)
+// Runtime API next API method, look up the pid of the Runtime process.
+// We first get a slice of "candidate" pids (pgid is in ManagedProcesses)
 // and if that isn't empty find the TCP socket inode that matches the address
 // from /proc/net/tcp then use the candidate pids to iterate /proc/<PID>/fd
 // to find the pid that matches the TCP socket inode value.
 func (pm *ProcessManager) FindPidFromAddress(address string) int {
-	// Get the pids of all the ManagedProcesses
-	var pids []int
-	pm.RLock()
-	for k, _ := range pm.processes { // Get the keys (pids) from processes map
-		pids = append(pids, k)
-	}
-	pm.RUnlock()
+	// Get a slice of candidate pids from /proc, applying a filter to
+	// the full list that selects only those pids whose pgid matches
+	// the pid of a ManagedProcess e.g. a Lambda Runtime process.
+	pids := GetPids(func(pid int) bool {
+		if pgid, err := syscall.Getpgid(pid); err == nil {
+			pm.RLock()
+			_, ok := pm.processes[pgid]
+			pm.RUnlock()
+			return ok
+		}
+		return false
+	})
 
 	if len(pids) == 0 {
 		return 0

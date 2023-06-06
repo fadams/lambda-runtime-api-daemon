@@ -43,9 +43,8 @@ import (
 
 const (
 	// When an entry matches a remote address in /proc/net/tcp the following
-	// are the offsets from the matching address to the inode entry we need.
+	// is the offset from the matching address to the inode entry we need.
 	inodeStart = 87
-	inodeEnd   = 95
 )
 
 // Given the remote address of a TCP connection (on the current host) search
@@ -87,7 +86,11 @@ func FindTCPInodeFromAddress(address string) string {
 		// Get index of the normalised address and use that to find inode
 		index := bytes.Index(procnettcp, normalisedAddr)
 		start := index + inodeStart
-		end := index + inodeEnd
+
+		// Find the index of the first space from the start of the inode
+		// entry, which will be the length of the inode string.
+		length := bytes.IndexByte(procnettcp[start:len(procnettcp)-1], byte(' '))
+		end := start + length
 
 		if index != -1 && end < len(procnettcp) {
 			inode = string(procnettcp[start:end])
@@ -135,7 +138,9 @@ func FindPidFromInode(pids []int, inode string) int {
 				fdpath := procfd + "/" + entries[j].Name()
 				if entry, err := os.Readlink(fdpath); err == nil {
 					//fmt.Println(entry)
+					//fmt.Println()
 					if entry == "socket:["+inode+"]" {
+						//fmt.Printf("found %d\n", pid)
 						return pid
 					}
 				}
