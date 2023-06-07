@@ -24,7 +24,7 @@ CMD ["/echo"]
 ```
 The approach taken with this image is a little different from the approach taken in the AWS documentation for go Lambdas, in particular it makes use of the fact that it is trivial to compile go applications to static binaries thus making it simple to use [scratch Docker images](https://hub.docker.com/_/scratch/).
 
-The [Makefile](Make) does all the work to compile the go application to a static binary:
+The [Makefile](Makefile) does all the work to compile the go application to a static binary:
 ```
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -ldflags "-s -w" -o ./ echo
 ```
