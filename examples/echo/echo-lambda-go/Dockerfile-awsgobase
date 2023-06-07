@@ -1,0 +1,77 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+# 
+#   http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# Simple go Lambda built using the AWS go:1 base image largely following
+# the instructions from the AWS documentation:
+# https://docs.aws.amazon.com/lambda/latest/dg/go-image.html#go-image-v1
+# though using a builder image to build the go binary.
+#
+# Note that although this is from the AWS documentation it doesn't really
+# represent the best way of using a go Lambda, as the image is huge at 836MB
+# and the go binary dynamically links some key libraries if the AWS
+# instructions are followed. Almost all of the image is actually unnecessary
+# and represents a large user space surface.
+#
+# A *much* better approach is to build the go Lambda as a static binary and
+# build an image from scratch using that, as illustrated in the main Dockerfile
+# in this repository so this Dockerfile is purely illustrative.
+
+FROM golang:1.18 as builder
+WORKDIR /go/src/echo-lambda
+COPY . .
+RUN GOOS=linux GOARCH=amd64 go build -o echo echo.go
+
+# Copy artifacts to a AWS go:1 base image
+FROM public.ecr.aws/lambda/go:1
+COPY --from=builder /go/src/echo-lambda/echo ${LAMBDA_TASK_ROOT}
+
+# Set the CMD to handler
+CMD ["echo"]
+
+#-------------------------------------------------------------------------------
+# docker build -t echo-lambda-go -f Dockerfile-awsgobase .
+
+# Run using AWS Lambda RIE (if installed)
+# docker run --rm -u 1000:1000 -p 8080:8080 echo-lambda-go
+
+# Use this to bind-mount lambda-runtime-api-daemon
+# docker run --rm -u 1000:1000 -p 8080:8080 -v ${PWD}/lambda-runtime-api-daemon:/usr/local/bin/aws-lambda-rie -e AWS_LAMBDA_FUNCTION_NAME=echo-lambda -e AMQP_URI="amqp://$(hostname -I | awk '{print $1}'):5672?connection_attempts=20&retry_delay=10&heartbeat=0" echo-lambda-go
+
+
+# Different ways to invoke:
+# Note that the AWS Lambda RIE only supports the FunctionName function in the
+# Invoke URI, but the Lambda Runtime API Daemon supports URIs with
+# FunctionName set to AWS_LAMBDA_FUNCTION_NAME e.g. echo-lambda
+
+# curl -XPOST "http://localhost:8080/2015-03-31/functions/function/invocations" -d '{"key": "value"}'
+
+# Works with Lambda Runtime API Daemon but not with AWS Lambda RIE
+# curl -XPOST "http://localhost:8080/2015-03-31/functions/echo-lambda/invocations" -d '{"key": "value"}'
+
+# Works with Lambda Runtime API Daemon but not with AWS Lambda RIE. Note the
+# quoted JSON string. If just "hello" is used the Lambda will fail to unmarshall
+# because it's not valid JSON.
+# curl -XPOST "http://localhost:8080/2015-03-31/functions/echo-lambda/invocations" -d '"hello"'
+
+# aws lambda invoke --endpoint-url http://localhost:8080 --function-name function --cli-binary-format raw-in-base64-out --payload '{ "key": "value" }' /dev/stderr 1>/dev/null
+
+# Works with Lambda Runtime API Daemon but not with AWS Lambda RIE as the
+# function-name needs to be function for the RIE.
+# aws lambda invoke --endpoint-url http://localhost:8080 --function-name echo-lambda --cli-binary-format raw-in-base64-out --payload '{ "key": "value" }' /dev/stderr 1>/dev/null
+

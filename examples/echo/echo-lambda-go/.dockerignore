@@ -1,0 +1,12 @@
+
+# First exclude everything
+**
+*.*
+
+# Then explicitly allowlist what is required
+!Makefile
+!go.mod
+!go.sum
+!echo.go
+!lambda-entrypoint.sh
+!lambda-entrypoint
