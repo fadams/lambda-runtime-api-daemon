@@ -149,10 +149,11 @@ func (rapi *RuntimeAPI) next(w http.ResponseWriter, r *http.Request) {
 			// from being propagated to the Python interpreter.
 			// https://github.com/aws-samples/graceful-shutdown-with-aws-lambda
 
-			// Get Extensions indexed by RemoteAddr (host:port of connected Runtime)
-			extensions, pid, _ := rapi.extensions.IndexedByAddr(r.RemoteAddr)
+			// Get the slice of Extension "handles" and the pid and pgid of the
+			// Runtime process indexed by RemoteAddr (host:port of connected Runtime)
+			extensions, _, pgid := rapi.extensions.IndexedByAddr(r.RemoteAddr)
 			// Send Shutdown Event to Extensions that have registered to receive it.
-			extensions.SendShutdownEvent("SPINDOWN")
+			extensions.SendShutdownEvent("SPINDOWN") // SPINDOWN – Normal shutdown
 
 			// From the Extensions API documentation:
 			// https://docs.aws.amazon.com/lambda/latest/dg/runtimes-extensions-api.html#runtimes-lifecycle-shutdown
@@ -161,19 +162,19 @@ func (rapi *RuntimeAPI) next(w http.ResponseWriter, r *http.Request) {
 			//     0 ms – A function with no registered extensions
 			//     500 ms – A function with a registered internal extension
 			//     2,000 ms – A function with one or more registered external extensions
-			log.Infof("Terminating idle Lambda Runtime: pid %d", pid)
+			log.Infof("Terminating idle Lambda Runtime: pgid %d", pgid)
 			if len(rapi.extensions.Paths()) > 0 { // Registered External Extensions
 				time.Sleep(1700 * time.Millisecond)
-				syscall.Kill(pid, syscall.SIGTERM)
+				syscall.Kill(-pgid, syscall.SIGTERM)
 				time.Sleep(300 * time.Millisecond)
 			} else { // Registered Internal Extensions only
-				syscall.Kill(pid, syscall.SIGTERM)
+				syscall.Kill(-pgid, syscall.SIGTERM)
 				time.Sleep(500 * time.Millisecond)
 			}
 			// if the Runtime/Extension does not respond to the Shutdown event
 			// within the limit, Lambda ends the Runtime and Extensions by
-			// sending a SIGKILL signal to the *process group* (hence the -pid).
-			syscall.Kill(-pid, syscall.SIGKILL)
+			// sending a SIGKILL signal to the *process group* (hence the -pgid).
+			syscall.Kill(-pgid, syscall.SIGKILL)
 		} else {
 			// If no Extensions are registered Lambda ends Runtime with SIGKILL.
 			if pid := rapi.pm.FindPidFromAddress(r.RemoteAddr); pid > 0 {
