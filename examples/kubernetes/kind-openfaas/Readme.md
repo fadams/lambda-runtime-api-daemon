@@ -87,13 +87,13 @@ The Lambda Container Images for those examples were built **without** the Lambda
 
 Mounting the Daemon in the way illustrated by those examples is ideal during development and also decouples the deployment lifecycle of the Daemon and the Lambdas, though it adds complications for Kubernetes based deployments. Because OpenFaaS "hides" the underlying Kubernetes deployment and service of the functions by using the faas-cli to deploy, for now it is simpler to bundle the Daemon with Lambdas we wish to deploy to OpenFaaS so we create new container images that simply add the Daemon.
 
-[Dockerfile-echo](/home/fadams/Development/content-futures/lambda-runtime-api-daemon/examples/kubernetes/kind-openfaas/Dockerfile-echo) extends the echo-lambda image, copying the Runtime API Daemon and naming it aws-lambda-rie, as the ENTRYPOINT is set to use /usr/local/bin/aws-lambda-rie to be compatible with AWS images.
+[Dockerfile-echo](Dockerfile-echo) extends the echo-lambda image, copying the Runtime API Daemon and naming it aws-lambda-rie, as the ENTRYPOINT is set to use /usr/local/bin/aws-lambda-rie to be compatible with AWS images.
 ```
 FROM echo-lambda
 
 COPY lambda-runtime-api-daemon /usr/local/bin/aws-lambda-rie
 ```
-Similarly, [Dockerfile-image-greyscale](/home/fadams/Development/content-futures/lambda-runtime-api-daemon/examples/kubernetes/kind-openfaas/Dockerfile-image-greyscale) extends image-greyscale-lambda.
+Similarly, [Dockerfile-image-greyscale](Dockerfile-image-greyscale) extends image-greyscale-lambda.
 ```
 FROM image-greyscale-lambda
 
