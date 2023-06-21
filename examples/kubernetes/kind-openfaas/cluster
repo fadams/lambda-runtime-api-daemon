@@ -1,0 +1,390 @@
+#!/bin/bash
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+# 
+#   http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Prerequisites: Requires Docker and kind to be installed as well as the
+# kubectl, helm and OpenFaaS CLIs to be available on the user's PATH.
+
+# Get the cluster command to run from stdin.
+COMMAND="${1:-}"
+
+CLUSTER_NAME=openfaas
+CLUSTER_CONTEXT=kind-${CLUSTER_NAME}
+# Use the following throughout to make sure the kubectl commands explicitly
+# target the required cluster
+# kubectl --context ${CLUSTER_CONTEXT}
+
+#-------------------------------------------------------------------------------
+
+# This script and the cluster it creates has dependencies on a number of CLIs
+# like kind, kubectl, helm, faas-cli, etc being available on the PATH.
+# For installation instructions see:
+# https://kind.sigs.k8s.io/docs/user/quick-start
+# https://kubernetes.io/docs/tasks/tools/#kubectl
+# https://helm.sh/docs/intro/install/
+# https://docs.openfaas.com/cli/install/ or https://github.com/openfaas/faas-cli/releases
+function cluster::preflight-checks {
+    echo "Checking dependencies"
+    for REQUIRED_CLI in kind kubectl helm faas-cli; do
+        if command -v ${REQUIRED_CLI} &> /dev/null; then
+            echo "${REQUIRED_CLI} is available"
+        else
+            echo "${REQUIRED_CLI} could not be found on path, exiting"
+            #cluster::install_${REQUIRED_CLI} # TODO
+            exit
+        fi
+    done
+    echo "Dependencies OK!"
+    echo
+}
+
+#-------------------------------------------------------------------------------
+
+# Deploy kind Kubernetes cluster and kubernetes-dashboard
+# https://kind.sigs.k8s.io/
+# https://kind.sigs.k8s.io/docs/user/quick-start
+# https://kind.sigs.k8s.io/docs/user/quick-start#configuring-your-kind-cluster
+function cluster::deploy-kind-cluster {
+    echo "Starting cluster"
+    kind create cluster --name ${CLUSTER_NAME} --config cluster-config.yaml
+    echo
+}
+
+# https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/
+# https://github.com/kubernetes/dashboard/releases
+function cluster::deploy-kubernetes-dashboard {
+    # Deploy kubernetes-dashboard
+    echo "Deploying kubernetes-dashboard"
+    kubectl --context ${CLUSTER_CONTEXT} apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+    echo
+
+    # Create kubernetes-dashboard admin-user bound to cluster-admin role"
+    # Based on approach detailed in documentation here: https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md
+    echo "Creating kubernetes-dashboard admin-user"
+    kubectl --context ${CLUSTER_CONTEXT} apply -f dashboard-adminuser.yaml
+    echo
+
+    # Wait for kubernetes-dashboard to become available
+    # First poll using kubectl get pods 
+    DASHBOARD_POD_STATUS=""
+    while [ "${DASHBOARD_POD_STATUS}" != "Running" ]; do
+        DASHBOARD_POD_STATUS=$(kubectl --context ${CLUSTER_CONTEXT} get pods -n kubernetes-dashboard --selector k8s-app=kubernetes-dashboard | tail -n1 | awk '{print $3}')
+        echo "kubernetes-dashboard pod status: ${DASHBOARD_POD_STATUS}"
+        if [ "${DASHBOARD_POD_STATUS}" != "Running" ]; then sleep 5; fi
+    done
+
+    # Next check that the kubernetes-dashboard is available and get its name
+    DASHBOARD_SERVICE=""
+    while [ "${DASHBOARD_SERVICE}" = "" ]; do
+        DASHBOARD_SERVICE=$(kubectl --context ${CLUSTER_CONTEXT} get services -n kubernetes-dashboard --selector k8s-app=kubernetes-dashboard | tail -n1 | awk '{print $1}')
+    done
+
+    # Set the Cluster name in the dashboard Global settings to KVM Cluster
+    # Not sure if there is a more elegant way to do this? The config seems
+    # to be held in the ConfigMap kubernetes-dashboard-settings and there
+    # doesn't seem to be a way to set a specific key so use the following:
+    # https://blog.atomist.com/updating-a-kubernetes-secret-or-configmap/
+    kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard create configmap kubernetes-dashboard-settings --from-literal=_global='{"clusterName":"'${CLUSTER_NAME}'","itemsPerPage":10,"labelsLimit":3,"logsAutoRefreshTimeInterval":5,"resourceAutoRefreshTimeInterval":5,"disableAccessDeniedNotifications":false}' --dry-run=client -o yaml | kubectl --context ${CLUSTER_CONTEXT} apply -f -
+
+    echo
+    echo "Dashboard service: ${DASHBOARD_SERVICE}"
+    echo
+
+    # Get kubernetes-dashboard Token:
+    # --------------------------------------------------------------------------
+    # The previous way to do this was as follows, basically making use of
+    # kubectl -n kubernetes-dashboard get secret
+    #
+    # The block
+    # kubectl -n kubernetes-dashboard get secret | grep admin-user | awk '{print $1}'
+    # gets secret from kubernetes-dashboard namespace then greps for admin-user
+    # to find the token name (the awk retrieves the first field, which is Name)
+    # Using the token name thus retrieved, describe secret is then called and
+    # the grep token: is used to filter the line we want.
+    #echo "Getting kubernetes-dashboard Token using the command:"
+    #echo "kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard describe secret $(kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard get secret | grep admin-user | awk '{print $1}') | grep token:"
+    #echo
+    #kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard describe secret $(kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard get secret | grep admin-user | awk '{print $1}') | grep token:
+    #echo
+    #
+    # As of Kubernetes 1.24
+    # https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.24.md#urgent-upgrade-notes
+    # The LegacyServiceAccountTokenNoAutoGeneration feature gate is beta, and
+    # enabled by default. When enabled, Secret API objects containing service
+    # account tokens are no longer auto-generated for every ServiceAccount
+    # https://itnext.io/big-change-in-k8s-1-24-about-serviceaccounts-and-their-secrets-4b909a4af4e0
+    # So TL;DR the above approach of get secret/describe secret won't work as
+    # there are no longer auto-generated secrets.
+    # The approach for Kubernetes 1.24 uses create token
+    # kubectl -n kubernetes-dashboard create token admin-user
+    # --------------------------------------------------------------------------
+    echo "Getting kubernetes-dashboard Token using the command:"
+    echo "kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard create token admin-user"
+    echo
+    kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard create token admin-user
+    echo
+
+
+    # Enable access to the dashboard, see: https://github.com/kubernetes/dashboard/blob/master/docs/user/accessing-dashboard/README.md
+
+    # Set DASHBOARD_PORT to 30000 to match port exposed using extraPortMappings
+    # in the kind config cluster-config.yaml
+    DASHBOARD_PORT=30000
+    DASHBOARD_URL=https://localhost:${DASHBOARD_PORT}
+
+    # Option 1: Using kubectl port-forward
+#    echo "Enabling port forwarding to dashboard using kubectl port-forward"
+#    kubectl --context ${CLUSTER_CONTEXT} port-forward -n kubernetes-dashboard service/kubernetes-dashboard ${DASHBOARD_PORT}:443&
+#    export KUBECTL_PORT_FORWARD_PID=$!
+#    echo "KUBECTL_PORT_FORWARD_PID: ${KUBECTL_PORT_FORWARD_PID}"
+
+
+    # Option 2: Change kubernetes-dashboard to use NodePort
+    # This command gets the original kubernetes-dashboard services config as
+    # yaml on stdout then pipes that through sed to change the type to NodePort
+    # and append a nodePort to to match DASHBOARD_PORT, it then applies the new
+    # config by piping to kubectl apply's stdin via the "-f -" option
+    kubectl --context ${CLUSTER_CONTEXT} get services -n kubernetes-dashboard -o yaml ${SERVICE} | sed "s/ClusterIP$/NodePort/g" | sed "s/port: 443/port: 443\n      nodePort: ${DASHBOARD_PORT}/g" | kubectl apply -f -
+
+
+    # Option 3: Set up an ingress controller TODO
+    #kubectl --context ${CLUSTER_CONTEXT} apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/static/provider/kind/deploy.yaml
+
+
+    echo
+    echo "DASHBOARD_URL: $DASHBOARD_URL"
+
+    # Open default browser at Kubernetes dashboard URL.
+#    xdg-open $DASHBOARD_URL
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision a local container registry for kind to use. From kind documentation
+# https://kind.sigs.k8s.io/docs/user/local-registry/
+# https://docs.openfaas.com/tutorials/local-kind-registry/
+# This is included for completeness, but we don't actually use it in this
+# setup, rather we use cluster::deploy-registry below, which is similar, but
+# insted deploys a local registry to the cluster, which seems neater.
+function cluster::deploy-local-registry {
+    # 1. Create the registry container unless it already exists
+    reg_name="kind-registry"
+    reg_port=5000
+    echo
+
+    if [ "$(docker inspect -f '{{.State.Running}}' "${reg_name}" 2>/dev/null || true)" != 'true' ]; then
+        echo "Creating Container registry ${reg_name} on localhost:${reg_port}:5000"
+        #docker run -d --restart=always -p "127.0.0.1:${reg_port}:5000" --name "${reg_name}" registry:2
+        docker run -d -p "127.0.0.1:${reg_port}:5000" --name "${reg_name}" registry:2
+    else
+        echo "Container registry ${reg_name} on localhost:${reg_port}:5000 is running"
+    fi
+
+    echo
+
+    # 2. Already done in cluster-config.yaml
+    # 3. Add the registry config to the nodes
+    #
+    # This is necessary because localhost resolves to loopback addresses that
+    # are network-namespace local.
+    # In other words: localhost in the container is not localhost on the host.
+    #
+    # We want a consistent name that works from both ends, so tell containerd to
+    # alias localhost:${reg_port} to the registry container when pulling images
+    REGISTRY_DIR="/etc/containerd/certs.d/localhost:${reg_port}"
+    for node in $(kind get nodes --name ${CLUSTER_NAME}); do
+        docker exec "${node}" mkdir -p "${REGISTRY_DIR}"
+        cat <<EOF | docker exec -i "${node}" cp /dev/stdin "${REGISTRY_DIR}/hosts.toml"
+[host."http://${reg_name}:5000"]
+EOF
+    done
+
+    # 4. Connect the registry to the cluster network if not already connected
+    # Allows kind to bootstrap the network but ensures they're on same network
+    if [ "$(docker inspect -f='{{json .NetworkSettings.Networks.kind}}' "${reg_name}")" = 'null' ]; then
+        docker network connect "kind" "${reg_name}"
+    fi
+
+    # 5. Document the local registry
+    # https://github.com/kubernetes/enhancements/tree/master/keps/sig-cluster-lifecycle/generic/1755-communicating-a-local-registry
+    cat <<EOF | kubectl --context ${CLUSTER_CONTEXT} apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-registry-hosting
+  namespace: kube-public
+data:
+  localRegistryHosting.v1: |
+    host: "localhost:${reg_port}"
+    help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
+EOF
+
+    echo
+}
+
+
+# Provision a container registry for kind to use, deployed to kind cluster.
+# See registry.yaml
+function cluster::deploy-registry {
+    echo "Deploying local container registry to cluster"
+
+    kubectl --context ${CLUSTER_CONTEXT} apply -f registry.yaml
+
+    # Add the registry config to the nodes
+    #
+    # This is necessary because localhost resolves to loopback addresses that
+    # are network-namespace local.
+    # In other words: localhost in the container is not localhost on the host.
+    #
+    # We want a consistent name that works from both ends, so tell containerd to
+    # alias localhost:${reg_port} to the registry service exposed as a nodePort
+    # on the node hosts when pulling images.
+    REGISTRY_NAME="localhost" # Exposed as localhost due to nodePort configuration
+    REGISTRY_PORT=5000
+    NODE_PORT=30001
+    REGISTRY_DIR="/etc/containerd/certs.d/localhost:${REGISTRY_PORT}"
+    for node in $(kind get nodes --name ${CLUSTER_NAME}); do
+        docker exec "${node}" mkdir -p "${REGISTRY_DIR}"
+        cat <<EOF | docker exec -i "${node}" cp /dev/stdin "${REGISTRY_DIR}/hosts.toml"
+[host."http://${REGISTRY_NAME}:${NODE_PORT}"]
+EOF
+    done
+}
+
+
+#-------------------------------------------------------------------------------
+
+# Provision OpenFaaS via Helm
+# https://github.com/openfaas/faas-netes/tree/master/chart/openfaas#2-install-with-helm
+#
+# OpenFaaS documentation
+# https://docs.openfaas.com/
+# Labs for learning about OpenFaaS
+# https://github.com/openfaas/workshop
+function cluster::deploy-openfaas {
+    echo "Starting OpenFaaS on Kubernetes cluster"
+
+    # Create namespaces for OpenFaaS core services and for the functions:
+    kubectl --context ${CLUSTER_CONTEXT} apply -f https://raw.githubusercontent.com/openfaas/faas-netes/master/namespaces.yml
+
+    # Deploy via Helm, assumes helm CLI is already available on PATH
+    # --set values described in the Configuration documentation:
+    # https://github.com/openfaas/faas-netes/tree/master/chart/openfaas#configuration
+    helm repo add openfaas https://openfaas.github.io/faas-netes/
+
+    helm repo update && \
+    helm upgrade --install openfaas openfaas/openfaas \
+        --kube-context ${CLUSTER_CONTEXT} \
+        --namespace openfaas  \
+        --set functionNamespace=openfaas-fn \
+        --set generateBasicAuth=true \
+        --set openfaasPRO=false
+    echo
+}
+
+# Wait until the OpenFaaS services become available.
+function cluster::wait-for-openfaas-services {
+    # Wait for OpenFaaS Gateway to start
+    STATE="unknown"
+    while [ "$STATE" != "Running" ]; do
+        STATE=$(kubectl --context ${CLUSTER_CONTEXT} get pods -n openfaas --selector app=gateway | tail -n1 | awk '{print $3}')
+        echo "OpenFaaS gateway pod status: $STATE"
+        if [ "${STATE}" != "Running" ]; then sleep 5; fi
+    done
+
+    echo
+}
+
+function cluster::login-openfaas {
+    PASSWORD=$(kubectl --context ${CLUSTER_CONTEXT} -n openfaas get secret basic-auth -o jsonpath="{.data.basic-auth-password}" | base64 --decode) && \
+    echo "OpenFaaS admin password: ${PASSWORD}"
+
+    #OPENFAAS_GATEWAY_PORT=$(kubectl --context ${CLUSTER_CONTEXT} get services -n openfaas gateway-external -o='jsonpath={.spec.ports[0].nodePort}')
+    OPENFAAS_GATEWAY_PORT=8080 # containerPort: 31112 maps to hostPort: 8080 in cluster config
+
+    OPENFAAS_URL="http://localhost:${OPENFAAS_GATEWAY_PORT}"
+
+    echo "OpenFaaS Gateway port: ${OPENFAAS_GATEWAY_PORT}"
+    echo
+    echo "Please set OPENFAAS_URL on local machine via:"
+    echo "export OPENFAAS_URL=${OPENFAAS_URL}"
+
+    echo
+    echo "Logging to OpenFaaS with the command:"
+    echo "echo -n ${PASSWORD} | OPENFAAS_URL=${OPENFAAS_URL} faas-cli login -g ${OPENFAAS_URL} -u admin --password-stdin"
+    echo
+
+    # Log in to OpenFaaS
+    echo -n ${PASSWORD} | OPENFAAS_URL=${OPENFAAS_URL} faas-cli login -g ${OPENFAAS_URL} -u admin --password-stdin
+
+    echo
+}
+
+#-------------------------------------------------------------------------------
+
+function cluster::up {
+    # ------------------------------ Dependencies ------------------------------
+    cluster::preflight-checks
+
+    # ------------------ Kubernetes and Kubernetes Dashboard -------------------
+    cluster::deploy-kind-cluster
+    cluster::deploy-kubernetes-dashboard
+    #cluster::deploy-local-registry
+    cluster::deploy-registry
+
+    # -------------------------------- OpenFaaS --------------------------------
+    cluster::deploy-openfaas
+    cluster::wait-for-openfaas-services
+    cluster::login-openfaas
+}
+
+#-------------------------------------------------------------------------------
+
+case ${COMMAND} in
+  up)
+    cluster::up
+    ;;
+  down)
+    if [ "${KUBECTL_PORT_FORWARD_PID}" != "" ]; then
+        echo "stopping port forwader on PID ${KUBECTL_PORT_FORWARD_PID}"
+        kill ${KUBECTL_PORT_FORWARD_PID}
+    fi
+
+    echo "Stopping cluster"
+    kind delete cluster --name ${CLUSTER_NAME}
+    ;;
+  restart)
+    if [ "${KUBECTL_PORT_FORWARD_PID}" != "" ]; then
+        echo "stopping port forwader on PID ${KUBECTL_PORT_FORWARD_PID}"
+        kill ${KUBECTL_PORT_FORWARD_PID}
+    fi
+
+    echo "Stopping cluster"
+    kind delete cluster --name ${CLUSTER_NAME}
+    sleep 5
+    cluster::up
+    ;;
+  *)
+    echo "usage:" >&2
+    echo "  $0 up      - startup the cluster and provision services" >&2
+    echo "  $0 down    - stop and tear down the cluster" >&2
+    echo "  $0 restart - restart the cluster" >&2
+    exit 1
+    ;;
+esac
+

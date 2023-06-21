@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	// Chose chi over github.com/gorilla/mux as it seems the more active project
@@ -57,7 +58,8 @@ func NewInvokeAPIServer(uri string, invoker Invoker) *InvokeAPIServer {
 		var t time.Time
 
 		headers := r.Header
-		// Use Invocation ID as the correlationID if set, otherwise generate one.
+		// Use Invocation ID as the correlationID if set. If Invocation ID is
+		// not set the invoker.invoke call will generate one.
 		correlationID := headers.Get("Amz-Sdk-Invocation-Id")
 		// Base64 encoded Client Context as sent from Client, will often be empty.
 		b64CC := headers.Get("X-Amz-Client-Context")
@@ -87,9 +89,29 @@ func NewInvokeAPIServer(uri string, invoker Invoker) *InvokeAPIServer {
 		}
 	}
 
+	// Handler for the OpenFaaS /_/health and /_/ready API methods.
+	// For now just return http.StatusOK and write "OK" to keep OpenFaaS
+	// Gateway happy so we can "pretend" to be an OpenFaaS "Watchdog" to
+	// provide basic initial OpenFaaS support. TODO we may want to provide
+	// a more complete health/readiness check.
+	openFaaSHealth := func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("OK"))
+	}
+
 	// Create AWS Lambda Invoke API Server and API routes.
 	invokeRouter := chi.NewRouter()
-	invokeRouter.HandleFunc("/2015-03-31/functions/{function}/invocations", invocations)
+
+	// Lambda Invoke API https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html route.
+	invokeRouter.Post("/2015-03-31/functions/{function}/invocations", invocations)
+
+	// Optional OpenFaaS routes.
+	if strings.ToUpper(os.Getenv("ENABLE_OPENFAAS")) == "TRUE" {
+		log.Info("InvokeAPI enabling OpenFaaS routes")
+		invokeRouter.Post("/", invocations)
+		invokeRouter.Get("/_/health", openFaaSHealth)
+		invokeRouter.Get("/_/ready", openFaaSHealth)
+	}
+
 	invokeServer := &http.Server{
 		Addr:    uri, // Default is 0.0.0.0:8080
 		Handler: invokeRouter,

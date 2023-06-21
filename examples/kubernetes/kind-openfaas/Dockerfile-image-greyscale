@@ -1,0 +1,63 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+# 
+#   http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+FROM image-greyscale-lambda
+
+# Copy the Runtime API Daemon and name it aws-lambda-rie, as the ENTRYPOINT is
+# set to use /usr/local/bin/aws-lambda-rie to be compatible with AWS images.
+COPY lambda-runtime-api-daemon /usr/local/bin/aws-lambda-rie
+
+#-------------------------------------------------------------------------------
+# Build Lambda and push to local registry hosted on local k8s
+# cp ${PWD}/../../../bin/lambda-runtime-api-daemon .
+# docker build -t localhost:5000/image-greyscale-lambda-rapid -f Dockerfile-image-greyscale .
+# docker push localhost:5000/image-greyscale-lambda-rapid
+# rm lambda-runtime-api-daemon
+
+# Check containers are present in local registry
+# curl http://localhost:5000/v2/_catalog
+
+# Deploy to OpenFaaS
+# faas-cli deploy -f ./openfaas-function-stack.yaml
+
+# OpenFaaS
+# This Lambda expects input/output in API Gateway syntax e.g. body in the
+# "body" field. The request and response body are hex encoded.
+
+# To invoke the Lambda via curl:
+# First create request by reading and converting the image to hex in subshell
+# We create a request.txt file because curl errors with Argument list too long
+# if we attempt to directly use -d with large items.
+# We use xxd to convert to and from hex encoding:
+#
+# xxd -p | tr -d '\n'
+# converts stdin to hex and removes the newlines that xxd includes
+#
+# xxd -r -p
+# converts stdin from hex to binary
+#
+# echo '{"body": "'$(cat savannah_cat.jpg | xxd -p | tr -d '\n')'"}' > request.txt
+#
+# Given a request.txt we invoke the Lambda via the OpenFaaS Gateway URI:
+# curl -XPOST "http://localhost:8080/function/image-greyscale-lambda" -d @request.txt | grep -Po '"'"body"'"\s*:\s*"\K([^"]*)' | xxd -r -p > output.png
+#
+# This pipes the response via grep to extract the body field
+# https://stackoverflow.com/questions/1955505/parsing-json-with-unix-tools#comment42500081_1955505
+# It may be cleaner to use jq, but most distros need that to be installed.
+

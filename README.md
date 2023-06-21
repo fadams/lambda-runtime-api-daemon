@@ -1,6 +1,6 @@
 ![lambda-runtime-api-daemon](diagrams/lambda-runtime-api-daemon.png) 
 
-The Lambda Runtime API Daemon (RAPID) and its associated optional Lambda Server allows AWS Lambda functions packaged as [Lambda Container Images](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-package.html#gettingstarted-package-images) to be deployed and run in a wide range of heterogenous compute environments in addition to the proprietary AWS Lambda Service, for example as Docker images or in Kubernetes or even standalone on a Linux host.
+The Lambda Runtime API Daemon (RAPID) and its associated optional Lambda Server allows AWS Lambda functions packaged as [Lambda Container Images](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-package.html#gettingstarted-package-images) to be deployed and run in a wide range of heterogenous compute environments in addition to the proprietary AWS Lambda Service, for example as Docker images or in Kubernetes, [OpenFaaS](examples/kubernetes/kind-openfaas) or even standalone on a Linux host.
 
 ## Motivation
 From its introduction in November 2014 [AWS Lambda](https://docs.aws.amazon.com/lambda/) has been a game changing service, mainstreaming the idea of [Function as a Service (FaaS)](https://en.wikipedia.org/wiki/Function_as_a_service) as a microservice development and deployment pattern.
@@ -68,6 +68,7 @@ The following diagram shows the Function invocation path through the Lambda Runt
 ![rapid-invocations-implementation](diagrams/rapid-invocations-implementation.png) 
 
 ## Getting Started
+### Quick Start
 The first step is to build The Lambda Runtime API Daemon and Lambda Server.
 
 If go is installed locally the following instructions should be sufficient:
@@ -87,6 +88,11 @@ The Lambda Runtime API Daemon can be used in place of the [AWS Lambda Runtime In
 
 Some more concrete usage examples are included in the [examples](examples) directory and a good place to start is the example [echo lambda and clients](examples/echo).
 
+### Deploying Lambdas to OpenFaaS
+The Lambda Runtime API Daemon can be configured to emulate the OpenFaaS [watchdog](https://github.com/openfaas/of-watchdog) API simply by setting the environment variable `ENABLE_OPENFAAS` to `true`. This exposes the additional routes `/`, `/_/health`, and `/_/ready` on the Invoke API allowing unmodified Lambda Container Images to be deployed as OpenFaaS Functions.
+
+The example [kind-openfaas](examples/kubernetes/kind-openfaas) illustrates standing up a local kubernetes cluster with [kind](https://kind.sigs.k8s.io/) then deploying [OpenFaaS](https://www.openfaas.com/) to it and deploying Lambda Container Images bundled with the Runtime API Daemon configured to act as an OpenFaaS Function watchdog.
+
 ## Configuration
 The primary means of configuring the Lambda Runtime API Daemon and Lambda Server is through environment variables.
 
@@ -101,6 +107,7 @@ Currently supported environment variables specific to the Lambda Runtime API Dae
 * RUNTIME_API_PORT: The Runtime API listen port, default is 9001.
 * AMQP_URI: The connection URI to an AMQP message broker (e.g. RabbitMQ). The default is unset, which disables AMQP-RPC support. When set the URI is of the format `amqp://username:password@host:port/virtual_host?key=value&key=value`, e.g. `amqp://guest:guest@localhost:5672?connection_attempts=20&retry_delay=10&heartbeat=0`.
 * MAX_CONCURRENCY: The maximum number of Lambda instances that may be launched *by this Runtime API Daemon instance*.
+* ENABLE_OPENFAAS: If set to true the additional routes `/`, `/_/health`, and `/_/ready` will be exposed by the Invoke API, which will make the Daemon emulate the OpenFaaS [watchdog](https://github.com/openfaas/of-watchdog) API allowing unmodified Lambda Container Images to be deployed as OpenFaaS Functions. Value is case insensitive TRUE or FALSE and the default value is FALSE.
 
 The normal usage pattern is for a Runtime API Daemon to be packaged with a Lambda Container Image or mounted in the container to act as the container ENTRYPOINT. When a Lambda is invoked the Runtime API Daemon execs an instance of the Lambda Runtime API Client, which in turn inits the Lambda and calls the function handler. Each Runtime API Daemon instance is capable of launching and managing multiple Lambda instances in the container, configured by MAX_CONCURRENCY. 
 

@@ -1,0 +1,13 @@
+provider:
+  name: openfaas
+functions:
+  echo-lambda:
+    image: localhost:5000/echo-lambda-rapid:latest
+    lang: dockerfile
+    environment:
+      ENABLE_OPENFAAS: true
+  image-greyscale-lambda:
+    image: localhost:5000/image-greyscale-lambda-rapid:latest
+    lang: dockerfile
+    environment:
+      ENABLE_OPENFAAS: true
