@@ -18,8 +18,8 @@
 # under the License.
 #
 # Run with:
-# PYTHONPATH=../.. python3 echo_client_asyncio.py
-# PYTHONPATH=../.. LOG_LEVEL=DEBUG python3 echo_client_asyncio.py
+# PYTHONPATH=../.. python3 amqprpc_echo_client.py
+# PYTHONPATH=../.. LOG_LEVEL=DEBUG python3 amqprpc_echo_client.py
 #
 # PYTHONPATH is used to find the utils module
 #
