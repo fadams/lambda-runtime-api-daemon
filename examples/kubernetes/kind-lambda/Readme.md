@@ -114,6 +114,7 @@ However, the Lambda Runtime API Daemon only spawns Runtime instances when needed
 In other words with this model there may be multiple Lambda Runtime instances running in a single Execution Environment (e.g. container), although each individual Runtime instance still has a concurrency of one.
 
 There are relative pros and cons of using this scaling approach vice HPA.
+
 Pros:
 
 - It will scale up **much** faster than k8s spawning Pods via HPA.
