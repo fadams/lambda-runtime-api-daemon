@@ -1,0 +1,265 @@
+# 
+# Deploy with:
+# kubectl apply -f lambdas-keda.yaml
+#
+# Remove with:
+# kubectl delete -f lambdas-keda.yaml
+#
+
+# Deploy echo-lambda
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: echo-lambda
+  namespace: lambda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: echo-lambda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: echo-lambda
+    spec:
+      securityContext:
+        # Arbitrary uid. For systems that automatically run as a non-root
+        # user like Openshift this likely isn't needed.
+        runAsUser: 1000
+      # When configured as an initContainer (with KUBERNETES_INIT_CONTAINER set)
+      # the Runtime API Daemon copies itself, e.g the lambda-runtime-api-daemon
+      # executable, to /tmp and then exits. This allows the executable to be
+      # written to a volume and subsequently "injected" into the Lambda
+      # Container. We write it to /usr/local/bin/aws-lambda-rie because AWS
+      # images bundle the Runtime Image Emulator and the Runtime API Daemon
+      # replaces that, allowing unmodified AWS base images to be used.
+      initContainers:
+        - name: lambda-runtime-api-daemon
+          image: localhost:5000/lambda-runtime-api-daemon
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: KUBERNETES_INIT_CONTAINER # Just needs to be set
+          volumeMounts:
+          - name: lambda-runtime-api-daemon
+            mountPath: /tmp
+      containers:
+        - name: echo-lambda
+          image: localhost:5000/echo-lambda
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: AWS_LAMBDA_FUNCTION_NAME
+            #value: echo-lambda
+            # For variety set the value of this from the labels.
+            # https://kubernetes.io/docs/concepts/workloads/pods/downward-api/
+            # It might be nice to do this from the Deployment name, but I don't
+            # believe that this is supported so using the label is a compromise.
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app.kubernetes.io/name']
+          - name: AWS_LAMBDA_FUNCTION_TIMEOUT
+            value: "60"
+          - name: AMQP_URI
+            value: amqp://rabbitmq.messaging:5672
+          volumeMounts:
+            # Mount lambda-runtime-api-daemon as /usr/local/bin/aws-lambda-rie
+            # so we may use unmodified AWS base images if we wish.
+          - name: lambda-runtime-api-daemon
+            mountPath: /usr/local/bin/aws-lambda-rie
+            subPath: lambda-runtime-api-daemon
+            # Give the Lambda a writeable /tmp
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: lambda-runtime-api-daemon
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+
+---
+# Deploy image-greyscale-lambda
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: image-greyscale-lambda
+  namespace: lambda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: image-greyscale-lambda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: image-greyscale-lambda
+    spec:
+      securityContext:
+        # Arbitrary uid. For systems that automatically run as a non-root
+        # user like Openshift this likely isn't needed.
+        runAsUser: 1000
+      # When configured as an initContainer (with KUBERNETES_INIT_CONTAINER set)
+      # the Runtime API Daemon copies itself, e.g the lambda-runtime-api-daemon
+      # executable, to /tmp and then exits. This allows the executable to be
+      # written to a volume and subsequently "injected" into the Lambda
+      # Container. We write it to /usr/local/bin/aws-lambda-rie because AWS
+      # images bundle the Runtime Image Emulator and the Runtime API Daemon
+      # replaces that, allowing unmodified AWS base images to be used.
+      initContainers:
+        - name: lambda-runtime-api-daemon
+          image: localhost:5000/lambda-runtime-api-daemon
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: KUBERNETES_INIT_CONTAINER # Just needs to be set
+          volumeMounts:
+          - name: lambda-runtime-api-daemon
+            mountPath: /tmp
+      containers:
+        - name: image-greyscale-lambda
+          image: localhost:5000/image-greyscale-lambda
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: AWS_LAMBDA_FUNCTION_NAME
+            #value: image-greyscale-lambda
+            # For variety set the value of this from the labels.
+            # https://kubernetes.io/docs/concepts/workloads/pods/downward-api/
+            # It might be nice to do this from the Deployment name, but I don't
+            # believe that this is supported so using the label is a compromise.
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app.kubernetes.io/name']
+          - name: AWS_LAMBDA_FUNCTION_TIMEOUT
+            value: "60"
+          - name: AMQP_URI
+            value: amqp://rabbitmq.messaging:5672
+          volumeMounts:
+            # Mount lambda-runtime-api-daemon as /usr/local/bin/aws-lambda-rie
+            # so we may use unmodified AWS base images if we wish.
+          - name: lambda-runtime-api-daemon
+            mountPath: /usr/local/bin/aws-lambda-rie
+            subPath: lambda-runtime-api-daemon
+            # Give the Lambda a writeable /tmp
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: lambda-runtime-api-daemon
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+
+---
+# Deploy KEDA ScaledObject to scale echo-lambda Deployment based on queue depth
+# https://keda.sh/docs/2.14/concepts/scaling-deployments/
+# https://keda.sh/docs/2.14/scalers/rabbitmq-queue/
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: echo-lambda
+  namespace: lambda
+  #annotations:
+  #  scaledobject.keda.sh/transfer-hpa-ownership: "true"     # Optional. Use to transfer an existing HPA ownership to this ScaledObject
+  #  autoscaling.keda.sh/paused-replicas: "0" # Optional. Pause autoscaling
+  #  autoscaling.keda.sh/paused: "true"       # Optional. Pause autoscaling explicitly
+spec:
+  scaleTargetRef:
+    kind: Deployment    # Optional. Default: Deployment
+    apiVersion: apps/v1 # Optional. Default: apps/v1
+    name: echo-lambda   # Mandatory. Must be in the same namespace as the ScaledObject
+    #envSourceContainerName: echo-lambda # Optional. Default: .spec.template.spec.containers[0]
+  pollingInterval:  2   # Optional. Default: 30 seconds
+  cooldownPeriod:   10  # Optional. Default: 300 seconds
+  #idleReplicaCount: 0   # Optional. Default: ignored, must be less than minReplicaCount
+  # Note we set minReplicaCount to 1 because although Keda can scale to zero
+  # the default behaviour of lambda-runtime-api-daemon us to autodelete the
+  # AMQP queue that maps to the function name. If the queue is deleted then
+  # the metric Keda uses to scale back up won't be available.
+  # The autodelete behaviour may be made configurable in due course, though
+  # the presence of the queue is a useful proxy for the availability of the
+  # Lambda and lambda-server uses the AMQP mandatory flag to ensure that a
+  # function is available. If the queue is present but the function is not
+  # actually deployed requests will still be enqueued. Even without k8s scale
+  # to zero the lambda-runtime-api-daemon in the Lambda container actually
+  # scales the Lambda runtime process to zero after a timeout so in practice
+  # only the lambda-runtime-api-daemon will be active in the Lambda container.
+  minReplicaCount:  1   # Optional. Default: 0
+  maxReplicaCount:  50 # Optional. Default: 100
+  #fallback:             # Optional. Section to specify fallback options
+  #  failureThreshold: 3 # Mandatory if fallback section is included
+  #  replicas: 6         # Mandatory if fallback section is included
+  #advanced:             # Optional. Section to specify advanced options
+  #  restoreToOriginalReplicaCount: false # Optional. Default: false
+  #  horizontalPodAutoscalerConfig: # Optional. Section to specify HPA related options
+  #    name: keda-hpa-echo-lambda   # Optional. Default: keda-hpa-{scaled-object-name}
+  #    behavior:                    # Optional. Use to modify HPA's scaling behavior
+  #      scaleDown:
+  #        stabilizationWindowSeconds: 300
+  #        policies:
+  #        - type: Percent
+  #          value: 100
+  #          periodSeconds: 15
+  triggers:
+  - type: rabbitmq
+    metadata:
+      #host: amqp://rabbitmq.messaging:5672 # Optional. If not specified, it must be done by using TriggerAuthentication or hostFromEnv.
+      protocol: auto # Optional, amqp, http, or auto (default) to autodetect from `host` value.
+      mode: QueueLength # QueueLength or MessageRate
+      value: "100" # message backlog or publish/sec. target per instance
+      #activationValue: "0" # Optional. Activation threshold
+      queueName: echo-lambda
+      #vhostName: / # Optional. If not specified, use the vhost in the `host` connection string. Required for Azure AD Workload Identity authorization.
+      # Alternatively, you can use existing environment variables to read configuration from:
+      # See details in "Parameter list" section
+      hostFromEnv: AMQP_URI # Optional. Alternative to `host` parameter
+      unsafeSsl: "true"
+
+---
+# Deploy KEDA ScaledObject to scale image-greyscale-lambda Deployment based on queue depth
+# https://keda.sh/docs/2.14/concepts/scaling-deployments/
+# https://keda.sh/docs/2.14/scalers/rabbitmq-queue/
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: image-greyscale-lambda
+  namespace: lambda
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    apiVersion: apps/v1
+    name: image-greyscale-lambda
+  pollingInterval:  2
+  cooldownPeriod:   10
+  #idleReplicaCount: 0
+  minReplicaCount:  1
+  maxReplicaCount:  50
+  triggers:
+  - type: rabbitmq
+    metadata:
+      protocol: auto
+      mode: QueueLength
+      value: "100"
+      queueName: image-greyscale-lambda
+      hostFromEnv: AMQP_URI
+      unsafeSsl: "true"
+

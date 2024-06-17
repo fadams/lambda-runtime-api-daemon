@@ -1,0 +1,46 @@
+# Config for kind https://kind.sigs.k8s.io/
+# Five node (four workers) cluster config
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+# Uncomment this to allow minReplicas: 0 in HorizontalPodAutoscaler spec
+#featureGates:
+#  HPAScaleToZero: true
+
+# Create kind cluster with containerd registry config dir enabled
+# See:
+# https://kind.sigs.k8s.io/docs/user/local-registry/
+# https://github.com/kubernetes-sigs/kind/issues/2875
+# https://github.com/containerd/containerd/blob/main/docs/cri/config.md#registry-configuration
+# See: https://github.com/containerd/containerd/blob/main/docs/hosts.md
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
+nodes:
+- role: control-plane
+  extraPortMappings:
+  # Local container registry
+  - containerPort: 30001
+    hostPort: 5000
+  # Kubernetes Dashboard
+  - containerPort: 30000
+    hostPort: 30000
+  # RabbitMQ
+  - containerPort: 31672 # HTTP API and web UI port
+    hostPort: 15672
+  - containerPort: 31673 # Metrics port
+    hostPort: 15692
+  - containerPort: 30672 # Main amqp port
+    hostPort: 5672
+  # Prometheus
+  - containerPort: 30002
+    hostPort: 9090
+  # Lambda Server
+  - containerPort: 30003
+    hostPort: 8080
+- role: worker
+- role: worker
+- role: worker
+- role: worker
+

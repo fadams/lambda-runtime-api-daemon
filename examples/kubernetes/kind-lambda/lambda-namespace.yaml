@@ -1,0 +1,14 @@
+# 
+# Deploy with:
+# kubectl apply -f lambda-namespace.yaml
+#
+# Remove with:
+# kubectl delete -f lambda-namespace.yaml
+#
+
+# Create lambda Namespace
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: lambda
+

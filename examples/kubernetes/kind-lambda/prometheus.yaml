@@ -1,0 +1,303 @@
+# Install Prometheus in Kubernetes
+# Derived from the documentation in:
+# https://devopscube.com/setup-prometheus-monitoring-on-kubernetes/
+# https://se7entyse7en.dev/posts/how-to-set-up-kubernetes-service-discovery-in-prometheus/
+# 
+# Deploy with:
+# kubectl apply -f prometheus.yaml
+#
+# Remove with:
+# kubectl delete -f prometheus.yaml
+
+# Create monitoring Namespace
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: monitoring
+
+---
+# Create ServiceAccount
+# For Prometheus to discover the pods, services, and endpoints in our
+# Kubernetes cluster, it needs some permissions to be granted. By default,
+# a Kubernetes pod is assigned with a default service account in the same
+# namespace. A service account is simply a mechanism to provide an identity
+# for processes that run in a Pod. In our case, we’re going to create a
+# prometheus service account that will be granted some extra permissions.
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: prometheus
+  namespace: monitoring
+
+---
+# Create ClusterRole
+# One of the ways Kubernetes has for regulating permissions is through RBAC
+# Authorization. The RBAC API provides a set of Kubernetes objects that are
+# used for defining roles with corresponding permissions and how those rules
+# are associated with a set of subjects. In our specific case, we want to grant
+# to the prometheus service account (the subject) the permissions for querying
+# the Kubernetes API to get information about its resources (the rules).
+# This is done by creating a ClusterRole Kubernetes object.
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: discoverer
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+
+---
+# Create ClusterRoleBinding
+# Here we’re assigning the role defined in roleRef, which in this case is the
+# ClusterRole named discoverer that we previously defined, to the subjects
+# listed in subjects which for us is only the prometheus ServiceAccount.
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: prometheus-discoverer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: discoverer
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: monitoring
+
+---
+# Create prometheus config file as a ConfigMap
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: prometheus-server-conf
+  namespace: monitoring
+  labels:
+    name: prometheus-server-conf
+data:
+  prometheus.yml: |-
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+
+    scrape_configs:
+      #-------------------------------------------------------------------------
+      #- job_name: 'kube-state-metrics'
+      #  static_configs:
+      #    - targets: ['kube-state-metrics.kube-system.svc.cluster.local:8080']
+
+      #-------------------------------------------------------------------------
+      #- job_name: 'kubernetes-apiservers' 
+      #  kubernetes_sd_configs:
+      #  - role: endpoints
+      #  scheme: https
+      #  tls_config:
+      #    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      #  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      #  relabel_configs:
+      #  - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+      #    action: keep
+      #    regex: default;kubernetes;https
+
+      #-------------------------------------------------------------------------
+      #- job_name: 'kubernetes-kube-state'
+      #  kubernetes_sd_configs:
+      #  - role: pod
+      #  relabel_configs:
+      #  - action: labelmap
+      #    regex: __meta_kubernetes_pod_label_(.+)
+      #  - source_labels: [__meta_kubernetes_namespace]
+      #    action: replace
+      #    target_label: kubernetes_namespace
+      #  - source_labels: [__meta_kubernetes_pod_name]
+      #    action: replace
+      #    target_label: kubernetes_pod_name
+      #  - source_labels: [__meta_kubernetes_pod_label_grafanak8sapp]
+      #    regex: .*true.*
+      #    action: keep
+      #  - source_labels: ['__meta_kubernetes_pod_label_daemon', '__meta_kubernetes_pod_node_name']
+      #    regex: 'node-exporter;(.*)'
+      #    action: replace
+      #    target_label: nodename
+
+      #-------------------------------------------------------------------------
+      #- job_name: 'kubernetes-kubelet'
+      #  scheme: https
+      #  tls_config:
+      #    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      #    insecure_skip_verify: true
+      #  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      #  kubernetes_sd_configs:
+      #  - role: node
+      #  relabel_configs:
+      #  - action: labelmap
+      #    regex: __meta_kubernetes_node_label_(.+)
+      #  - target_label: __address__
+      #    replacement: kubernetes.default.svc:443
+      #  - source_labels: [__meta_kubernetes_node_name]
+      #    regex: (.+)
+      #    target_label: __metrics_path__
+      #    replacement: /api/v1/nodes/${1}/proxy/metrics
+
+      #-------------------------------------------------------------------------
+      - job_name: 'kubernetes-nodes'
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+        - role: node
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics/resource
+
+      #-------------------------------------------------------------------------
+      #- job_name: 'kubernetes-cadvisor'
+      #  scheme: https
+      #  tls_config:
+      #    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      #    insecure_skip_verify: true
+      #  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      #  kubernetes_sd_configs:
+      #  - role: node
+      #  relabel_configs:
+      #  - action: labelmap
+      #    regex: __meta_kubernetes_node_label_(.+)
+      #  - target_label: __address__
+      #    replacement: kubernetes.default.svc:443
+      #  - source_labels: [__meta_kubernetes_node_name]
+      #    regex: (.+)
+      #    target_label: __metrics_path__
+      #    replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+      #-------------------------------------------------------------------------
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+        - role: pod
+        relabel_configs:
+        # Select only those pods that have "prometheus.io/scrape: true" annotation
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+          # Set metrics_path (default is /metrics) to the metrics path specified in "prometheus.io/path: <metric path>" annotation.
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+          # Set the scraping port to the port specified in "prometheus.io/port: <port>" annotation and set address accordingly.
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_pod_name]
+          action: replace
+          target_label: kubernetes_pod_name
+
+      #-------------------------------------------------------------------------
+      #- job_name: 'kubernetes-service-endpoints'
+      #  kubernetes_sd_configs:
+      #  - role: endpoints
+      #  relabel_configs:
+      #  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+      #    action: keep
+      #    regex: true
+      #  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+      #    action: replace
+      #    target_label: __scheme__
+      #    regex: (https?)
+      #  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+      #    action: replace
+      #    target_label: __metrics_path__
+      #    regex: (.+)
+      #  - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+      #    action: replace
+      #    target_label: __address__
+      #    regex: ([^:]+)(?::\d+)?;(\d+)
+      #    replacement: $1:$2
+      #  - action: labelmap
+      #    regex: __meta_kubernetes_service_label_(.+)
+      #  - source_labels: [__meta_kubernetes_namespace]
+      #    action: replace
+      #    target_label: kubernetes_namespace
+      #  - source_labels: [__meta_kubernetes_service_name]
+      #    action: replace
+      #    target_label: kubernetes_service
+      #  - source_labels: [__meta_kubernetes_pod_name]
+      #    action: replace
+      #    target_label: kubernetes_pod
+
+---
+# Create Deployment
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.48.0
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+          - name: config
+            mountPath: /etc/prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-server-conf
+
+---
+# Expose prometheus deployment as a nodeport service type
+kind: Service
+apiVersion: v1
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  type: NodePort
+  ports:
+  - name: prometheus-service
+    protocol: TCP
+    port: 9090
+    targetPort: 9090
+    nodePort: 30002
+  selector:
+    app: prometheus
+

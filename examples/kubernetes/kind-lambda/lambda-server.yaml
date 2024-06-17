@@ -1,0 +1,53 @@
+# 
+# Deploy with:
+# kubectl apply -f lambda-server.yaml
+#
+# Remove with:
+# kubectl delete -f lambda-server.yaml
+#
+
+# Deploy lambda-server
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: lambda-server
+  namespace: lambda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lambda-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lambda-server
+    spec:
+      containers:
+        - name:  lambda-server
+          image:  localhost:5000/lambda-server
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: AMQP_URI
+            value: amqp://rabbitmq.messaging:5672
+          ports:
+            - name: http
+              protocol: TCP
+              containerPort: 8080
+
+---
+# Expose lambda-server deployment as a nodeport service type
+kind: Service
+apiVersion: v1
+metadata:
+  name: lambda-server
+  namespace: lambda
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    nodePort: 30003
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/name: lambda-server
+

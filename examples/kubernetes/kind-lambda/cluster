@@ -1,0 +1,437 @@
+#!/bin/bash
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+# 
+#   http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Prerequisites: Requires Docker, kind and kubectl to be installed.
+
+# Get the cluster command to run from stdin.
+COMMAND="${1:-}"
+
+CLUSTER_NAME=lambda
+CLUSTER_CONTEXT=kind-${CLUSTER_NAME}
+# Use the following throughout to make sure the kubectl commands explicitly
+# target the required cluster
+# kubectl --context ${CLUSTER_CONTEXT}
+
+#-------------------------------------------------------------------------------
+
+# This script and the cluster it creates has dependencies on a number of CLIs
+# like kind, kubectl, etc being available on the PATH.
+# For installation instructions see:
+# https://kind.sigs.k8s.io/docs/user/quick-start
+# https://kubernetes.io/docs/tasks/tools/#kubectl
+# https://helm.sh/docs/intro/install/
+# https://docs.openfaas.com/cli/install/ or https://github.com/openfaas/faas-cli/releases
+function cluster::preflight-checks {
+    echo "Checking dependencies"
+    #for REQUIRED_CLI in kind kubectl helm faas-cli; do
+    for REQUIRED_CLI in kind kubectl; do
+        if command -v ${REQUIRED_CLI} &> /dev/null; then
+            echo "${REQUIRED_CLI} is available"
+        else
+            echo "${REQUIRED_CLI} could not be found on path, exiting"
+            #cluster::install_${REQUIRED_CLI} # TODO
+            exit
+        fi
+    done
+    echo "Dependencies OK!"
+    echo
+}
+
+#-------------------------------------------------------------------------------
+
+# Deploy kind Kubernetes cluster and kubernetes-dashboard
+# https://kind.sigs.k8s.io/
+# https://kind.sigs.k8s.io/docs/user/quick-start
+# https://kind.sigs.k8s.io/docs/user/quick-start#configuring-your-kind-cluster
+function cluster::deploy-kind-cluster {
+    echo "Starting cluster"
+    kind create cluster --name ${CLUSTER_NAME} --config cluster-config.yaml
+    echo
+}
+
+# https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/
+# https://github.com/kubernetes/dashboard/releases
+function cluster::deploy-kubernetes-dashboard {
+    # Deploy kubernetes-dashboard
+    echo "Deploying kubernetes-dashboard"
+    kubectl --context ${CLUSTER_CONTEXT} apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+    echo
+
+    # Create kubernetes-dashboard admin-user bound to cluster-admin role"
+    # Based on approach detailed in documentation here: https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md
+    echo "Creating kubernetes-dashboard admin-user"
+    kubectl --context ${CLUSTER_CONTEXT} apply -f dashboard-adminuser.yaml
+    echo
+
+    # Wait for kubernetes-dashboard to become available
+    # First poll using kubectl get pods 
+    DASHBOARD_POD_STATUS=""
+    while [ "${DASHBOARD_POD_STATUS}" != "Running" ]; do
+        DASHBOARD_POD_STATUS=$(kubectl --context ${CLUSTER_CONTEXT} get pods -n kubernetes-dashboard --selector k8s-app=kubernetes-dashboard | tail -n1 | awk '{print $3}')
+        echo "kubernetes-dashboard pod status: ${DASHBOARD_POD_STATUS}"
+        if [ "${DASHBOARD_POD_STATUS}" != "Running" ]; then sleep 5; fi
+    done
+
+    # Next check that the kubernetes-dashboard is available and get its name
+    DASHBOARD_SERVICE=""
+    while [ "${DASHBOARD_SERVICE}" = "" ]; do
+        DASHBOARD_SERVICE=$(kubectl --context ${CLUSTER_CONTEXT} get services -n kubernetes-dashboard --selector k8s-app=kubernetes-dashboard | tail -n1 | awk '{print $1}')
+    done
+
+    # Set the Cluster name in the dashboard Global settings
+    # Not sure if there is a more elegant way to do this? The config seems
+    # to be held in the ConfigMap kubernetes-dashboard-settings and there
+    # doesn't seem to be a way to set a specific key so use the following:
+    # https://blog.atomist.com/updating-a-kubernetes-secret-or-configmap/
+    kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard create configmap kubernetes-dashboard-settings --from-literal=_global='{"clusterName":"'${CLUSTER_NAME}'","itemsPerPage":10,"labelsLimit":3,"logsAutoRefreshTimeInterval":5,"resourceAutoRefreshTimeInterval":5,"disableAccessDeniedNotifications":false}' --dry-run=client -o yaml | kubectl --context ${CLUSTER_CONTEXT} apply -f -
+
+    echo
+    echo "Dashboard service: ${DASHBOARD_SERVICE}"
+    echo
+
+    # Get kubernetes-dashboard Token:
+    # --------------------------------------------------------------------------
+    # The previous way to do this was as follows, basically making use of
+    # kubectl -n kubernetes-dashboard get secret
+    #
+    # The block
+    # kubectl -n kubernetes-dashboard get secret | grep admin-user | awk '{print $1}'
+    # gets secret from kubernetes-dashboard namespace then greps for admin-user
+    # to find the token name (the awk retrieves the first field, which is Name)
+    # Using the token name thus retrieved, describe secret is then called and
+    # the grep token: is used to filter the line we want.
+    #echo "Getting kubernetes-dashboard Token using the command:"
+    #echo "kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard describe secret $(kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard get secret | grep admin-user | awk '{print $1}') | grep token:"
+    #echo
+    #kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard describe secret $(kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard get secret | grep admin-user | awk '{print $1}') | grep token:
+    #echo
+    #
+    # As of Kubernetes 1.24
+    # https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.24.md#urgent-upgrade-notes
+    # The LegacyServiceAccountTokenNoAutoGeneration feature gate is beta, and
+    # enabled by default. When enabled, Secret API objects containing service
+    # account tokens are no longer auto-generated for every ServiceAccount
+    # https://itnext.io/big-change-in-k8s-1-24-about-serviceaccounts-and-their-secrets-4b909a4af4e0
+    # So TL;DR the above approach of get secret/describe secret won't work as
+    # there are no longer auto-generated secrets.
+    # The approach for Kubernetes 1.24 uses create token
+    # kubectl -n kubernetes-dashboard create token admin-user
+    # --------------------------------------------------------------------------
+    echo "Getting kubernetes-dashboard Token using the command:"
+    echo "kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard create token admin-user"
+    echo
+    kubectl --context ${CLUSTER_CONTEXT} -n kubernetes-dashboard create token admin-user
+    echo
+
+
+    # Enable access to the dashboard, see: https://github.com/kubernetes/dashboard/blob/master/docs/user/accessing-dashboard/README.md
+
+    # Set DASHBOARD_PORT to 30000 to match port exposed using extraPortMappings
+    # in the kind config cluster-config.yaml
+    DASHBOARD_PORT=30000
+    DASHBOARD_URL=https://localhost:${DASHBOARD_PORT}
+
+    # Option 1: Using kubectl port-forward
+#    echo "Enabling port forwarding to dashboard using kubectl port-forward"
+#    kubectl --context ${CLUSTER_CONTEXT} port-forward -n kubernetes-dashboard service/kubernetes-dashboard ${DASHBOARD_PORT}:443&
+#    export KUBECTL_PORT_FORWARD_PID=$!
+#    echo "KUBECTL_PORT_FORWARD_PID: ${KUBECTL_PORT_FORWARD_PID}"
+
+
+    # Option 2: Change kubernetes-dashboard to use NodePort
+    # This command gets the original kubernetes-dashboard services config as
+    # yaml on stdout then pipes that through sed to change the type to NodePort
+    # and append a nodePort to to match DASHBOARD_PORT, it then applies the new
+    # config by piping to kubectl apply's stdin via the "-f -" option
+    kubectl --context ${CLUSTER_CONTEXT} get services -n kubernetes-dashboard -o yaml ${SERVICE} | sed "s/ClusterIP$/NodePort/g" | sed "s/port: 443/port: 443\n      nodePort: ${DASHBOARD_PORT}/g" | kubectl apply -f -
+
+
+    # Option 3: Set up an ingress controller TODO
+    #kubectl --context ${CLUSTER_CONTEXT} apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/static/provider/kind/deploy.yaml
+
+
+    echo
+    echo "DASHBOARD_URL: $DASHBOARD_URL"
+
+    # Open default browser at Kubernetes dashboard URL.
+#    xdg-open $DASHBOARD_URL
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision a container registry for kind to use, deployed to kind cluster.
+# https://kind.sigs.k8s.io/docs/user/local-registry/
+# https://github.com/kubernetes-sigs/kind/issues/2875
+# https://github.com/containerd/containerd/blob/main/docs/cri/config.md#registry-configuration
+# See: https://github.com/containerd/containerd/blob/main/docs/hosts.md
+#
+# See registry.yaml
+function cluster::deploy-registry {
+    echo "Deploying local container registry to cluster"
+
+    kubectl --context ${CLUSTER_CONTEXT} apply -f registry.yaml
+
+    # Add the registry config to the nodes
+    #
+    # This is necessary because localhost resolves to loopback addresses that
+    # are network-namespace local.
+    # In other words: localhost in the container is not localhost on the host.
+    #
+    # We want a consistent name that works from both ends, so tell containerd to
+    # alias localhost:${reg_port} to the registry service exposed as a nodePort
+    # on the node hosts when pulling images.
+    REGISTRY_NAME="localhost" # Exposed as localhost due to nodePort configuration
+    REGISTRY_PORT=5000
+    NODE_PORT=30001
+    REGISTRY_DIR="/etc/containerd/certs.d/localhost:${REGISTRY_PORT}"
+    for node in $(kind get nodes --name ${CLUSTER_NAME}); do
+        docker exec "${node}" mkdir -p "${REGISTRY_DIR}"
+        cat <<EOF | docker exec -i "${node}" cp /dev/stdin "${REGISTRY_DIR}/hosts.toml"
+[host."http://${REGISTRY_NAME}:${NODE_PORT}"]
+EOF
+    done
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision RabbitMQ
+# https://blog.rabbitmq.com/posts/2020/08/deploying-rabbitmq-to-kubernetes-whats-involved/
+# https://github.com/rabbitmq/diy-kubernetes-examples/tree/master/kind
+#
+# See rabbitmq.yaml
+function cluster::deploy-rabbitmq {
+    echo "Deploying RabbitMQ to cluster"
+    kubectl --context ${CLUSTER_CONTEXT} apply -f rabbitmq.yaml
+}
+
+# Clustered version, see rabbitmq-cluster.yaml
+# RabbitMQ clustering can improve resilience by having multiple broker nodes.
+# It can, however, result in inconsistent throughput performance as a producer
+# and consumer connectig to the same node will have higher throuput that when
+# a producer connects to one node and a consumer connects to a different node
+# as RabbitMQ must internally copy the messages between nodes.
+function cluster::deploy-rabbitmq-cluster {
+    echo "Deploying RabbitMQ cluster to cluster"
+    kubectl --context ${CLUSTER_CONTEXT} apply -f rabbitmq-cluster.yaml
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision Prometheus
+# https://devopscube.com/setup-prometheus-monitoring-on-kubernetes/
+# https://se7entyse7en.dev/posts/how-to-set-up-kubernetes-service-discovery-in-prometheus/
+#
+# See prometheus.yaml
+function cluster::deploy-prometheus {
+    echo "Deploying Prometheus to cluster"
+    kubectl --context ${CLUSTER_CONTEXT} apply -f prometheus.yaml
+
+    # Wait for Prometheus to start
+    STATE="unknown"
+    while [ "$STATE" != "Running" ]; do
+        STATE=$(kubectl --context ${CLUSTER_CONTEXT} get pods -n monitoring --selector app=prometheus | tail -n1 | awk '{print $3}')
+        echo "Prometheus pod status: $STATE"
+        if [ "${STATE}" != "Running" ]; then sleep 5; fi
+    done
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision Lambda Namespace
+# See lambda-namespace.yaml
+function cluster::deploy-lambda-namespace {
+    kubectl --context ${CLUSTER_CONTEXT} apply -f lambda-namespace.yaml
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision Lambda Server
+# See lambda-server.yaml
+function cluster::deploy-lambda-server {
+    echo "Deploying Lambda Server to cluster"
+    # Push lambda-runtime-api-daemon to local in-cluster registry - assumes
+    # it has already been built locally and labelled
+    docker push localhost:5000/lambda-runtime-api-daemon
+    # Push lambda-server to local in-cluster registry - assumes it has
+    # already been built locally and labelled
+    docker push localhost:5000/lambda-server
+    kubectl --context ${CLUSTER_CONTEXT} apply -f lambda-server.yaml
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision Prometheus Adapter
+# An implementation of the Kubernetes Custom, Resource and External Metric APIs.
+# This adapter is therefore suitable for use with the autoscaling/v2 Horizontal
+# Pod Autoscaler in Kubernetes 1.6+.
+# It can also replace the metrics server on clusters that already run
+# Prometheus and collect the appropriate metrics.
+# https://github.com/kubernetes-sigs/prometheus-adapter
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/docs/walkthrough.md
+#
+# See prometheus-adapter.yaml
+function cluster::deploy-prometheus-adapter {
+    echo "Deploying Prometheus Adapter to cluster"
+    kubectl --context ${CLUSTER_CONTEXT} apply -f prometheus-adapter.yaml
+}
+
+# Provision Lambdas to test scaling based on queues via HPA
+# See lambdas-hpa.yaml
+function cluster::deploy-lambdas-hpa {
+    echo "Deploying Example Lambdas and HPA to cluster"
+    # Push echo-lambda container to local in-cluster registry - assumes it has
+    # already been built locally and labelled
+    docker push localhost:5000/echo-lambda
+    # Push image-greyscale-lambda container to local in-cluster registry - 
+    # assumes it has already been built locally and labelled
+    docker push localhost:5000/image-greyscale-lambda
+    kubectl --context ${CLUSTER_CONTEXT} apply -f lambdas-hpa.yaml
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision KEDA - alternative to Prometheus Adapter + HPA (don't use both)
+# https://keda.sh/
+# https://keda.sh/docs/2.14/deploy/
+# https://github.com/kedacore/keda/releases
+# See keda-2.14.0.yaml (needs k8s >= 1.27, previously used keda-2.12.1.yaml
+# which needed k8s >= 1.24)
+function cluster::deploy-keda {
+    echo "Deploying KEDA to cluster"
+    # NOTE (from KEDA documentation): --server-side option is needed because
+    # the ScaledJob CRD is too long to process, see the following issue for details
+    # https://github.com/kedacore/keda/issues/4740
+    kubectl --context ${CLUSTER_CONTEXT} apply --server-side -f keda-2.14.0.yaml
+
+    # Using Prometheus Adapter provides resource metrics for scaling on cpu
+    # and memory and providing kubectl top node, kubectl top pod -A
+    # etc. KEDA provides cpu scaling https://keda.sh/docs/2.7/scalers/cpu/
+    # but that uses resource metrics provided by Kubernetes Metrics Server
+    # so we deploy that too when KEDA is deployed.
+    kubectl --context ${CLUSTER_CONTEXT} apply -f metrics-server.yaml
+}
+
+# Provision Lambdas to test scaling based on queues via HPA
+# See lambdas-keda.yaml or lambdas-keda-prometheus-trigger.yaml
+function cluster::deploy-lambdas-keda {
+    echo "Deploying Example Lambdas and KEDA ScaledObject to cluster"
+    # Push echo-lambda container to local in-cluster registry - assumes it has
+    # already been built locally and labelled
+    docker push localhost:5000/echo-lambda
+    # Push image-greyscale-lambda container to local in-cluster registry - 
+    # assumes it has already been built locally and labelled
+    docker push localhost:5000/image-greyscale-lambda
+    kubectl --context ${CLUSTER_CONTEXT} apply -f lambdas-keda.yaml
+    # The lambdas-keda.yaml uses the native RabbitMQ KEDA trigger. An
+    # alternative approach us to use the KEDA prometheus trigger set to query
+    # the appropriate RabbitMQ metric e.g. rabbitmq_queue_messages{queue="echo-lambda"}
+    #kubectl --context ${CLUSTER_CONTEXT} apply -f lambdas-keda-prometheus-trigger.yaml
+}
+
+#-------------------------------------------------------------------------------
+
+# Provision Lambdas to test scaling using RAPID's MAX_CONCURRENCY setting.
+# See lambdas-max-concurrency.yaml
+function cluster::deploy-lambdas-max-concurrency {
+    echo "Deploying Example Lambdas using RAPID's MAX_CONCURRENCY setting to cluster"
+    # Push echo-lambda container to local in-cluster registry - assumes it has
+    # already been built locally and labelled
+    docker push localhost:5000/echo-lambda
+    # Push image-greyscale-lambda container to local in-cluster registry - 
+    # assumes it has already been built locally and labelled
+    docker push localhost:5000/image-greyscale-lambda
+    kubectl --context ${CLUSTER_CONTEXT} apply -f lambdas-max-concurrency.yaml
+}
+
+#-------------------------------------------------------------------------------
+
+function cluster::up {
+    # ------------------------------ Dependencies ------------------------------
+    cluster::preflight-checks
+
+    # ------------------ Kubernetes and Kubernetes Dashboard -------------------
+    cluster::deploy-kind-cluster
+    cluster::deploy-kubernetes-dashboard
+
+    # -------------------------------- Registry --------------------------------
+    cluster::deploy-registry
+
+    # -------------------------------- RabbitMQ --------------------------------
+    cluster::deploy-rabbitmq
+    #cluster::deploy-rabbitmq-cluster
+
+    # ------------------------------- Prometheus -------------------------------
+    cluster::deploy-prometheus
+
+    # --------------------------- Lambda Namespace -----------------------------
+    cluster::deploy-lambda-namespace
+
+    # ----------------------------- Lambda Server ------------------------------
+    cluster::deploy-lambda-server
+
+    # ----------------- Scale using Prometheus Adapter and HPA------------------
+    #cluster::deploy-prometheus-adapter # for Kubernetes Metrics APIs
+    #cluster::deploy-lambdas-hpa
+
+    # Alternatively.... (use *either* prometheus-adapter or KEDA not both)
+    # ---------------------------- Scale using KEDA ----------------------------
+    cluster::deploy-keda
+    cluster::deploy-lambdas-keda
+
+    # Another alternative is to use the Runtime API Daemon MAX_CONCURRENCY
+    # setting that will allow it to spawn multiple Lambda Runtime instances.
+    # ------------------- Scale using RAPID MAX_CONCURRENCY --------------------
+    #cluster::deploy-lambdas-max-concurrency
+}
+
+#-------------------------------------------------------------------------------
+
+case ${COMMAND} in
+  up)
+    cluster::up
+    ;;
+  down)
+    if [ "${KUBECTL_PORT_FORWARD_PID}" != "" ]; then
+        echo "stopping port forwader on PID ${KUBECTL_PORT_FORWARD_PID}"
+        kill ${KUBECTL_PORT_FORWARD_PID}
+    fi
+
+    echo "Stopping cluster"
+    kind delete cluster --name ${CLUSTER_NAME}
+    ;;
+  restart)
+    if [ "${KUBECTL_PORT_FORWARD_PID}" != "" ]; then
+        echo "stopping port forwader on PID ${KUBECTL_PORT_FORWARD_PID}"
+        kill ${KUBECTL_PORT_FORWARD_PID}
+    fi
+
+    echo "Stopping cluster"
+    kind delete cluster --name ${CLUSTER_NAME}
+    sleep 5
+    cluster::up
+    ;;
+  *)
+    echo "usage:" >&2
+    echo "  $0 up      - startup the cluster and provision services" >&2
+    echo "  $0 down    - stop and tear down the cluster" >&2
+    echo "  $0 restart - restart the cluster" >&2
+    exit 1
+    ;;
+esac
+

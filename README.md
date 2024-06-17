@@ -82,16 +82,21 @@ make docker
 ```
 In both cases this will build static binaries for the `lambda-runtime-api-daemon` and `lambda-server` and place them in the `bin`directory.
 
-For the Docker based build this will, in addition, create `lambda-runtime-api-daemon` and `lambda-server` Docker images. These images may be executed, however for the Lambda Runtime API Daemon in particular the normal usage pattern is to either include/embed the `lambda-runtime-api-daemon` static binary in the Lambda Container Image or to mount it in the Lambda container at run time as the container is started.
+For the Docker based build this will, in addition, create `lambda-runtime-api-daemon` and `lambda-server` Docker images. These images may be executed, however for the Lambda Runtime API Daemon in particular the normal usage pattern is to either include/embed the `lambda-runtime-api-daemon` static binary in the Lambda Container Image or to mount it in the Lambda container at run time as the container is started, so that image is most useful in a Kubernetes context where it is used in [init Containers](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/) as a means to mount the Daemon binary in the Lambda containers.
 
 The Lambda Runtime API Daemon can be used in place of the [AWS Lambda Runtime Interface Emulator (RIE)](https://github.com/aws/aws-lambda-runtime-interface-emulator), so much of the AWS documentation for [Creating container images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html) and [Testing Lambda container images locally](https://docs.aws.amazon.com/lambda/latest/dg/images-test.html) applies too and the `lambda-runtime-api-daemon` executable can be used as a direct replacement for the `aws-lambda-rie` executable described in the AWS documentation.
 
 Some more concrete usage examples are included in the [examples](examples) directory and a good place to start is the example [echo lambda and clients](examples/echo).
 
+### Deploying Lambdas to Kubernetes
+The example [kind-lambda](examples/kubernetes/kind-lambda) illustrates the [Lambda Runtime API Daemon with Lambda Server](#lambda-runtime-api-daemon-with-lambda-server) scenario described earlier.
+
+The example illustrates standing up a local Kubernetes cluster with [kind](https://kind.sigs.k8s.io/) then deploying the Lambda Server and example Lambda Container Images to the cluster, using init Containers and Volumes to mount the lambda-runtime-api-daemon executable so we can use unmodified Lambda Container Images. This example also illustrates a range of different ways to scale the Lambdas using Kubernetes [Horizontal Pod Autoscaling](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) or the Runtime API Daemon's own MAX_CONCURRENCY setting.
+
 ### Deploying Lambdas to OpenFaaS
 The Lambda Runtime API Daemon can be configured to emulate the OpenFaaS [watchdog](https://github.com/openfaas/of-watchdog) API simply by setting the environment variable `ENABLE_OPENFAAS` to `true`. This exposes the additional routes `/`, `/_/health`, and `/_/ready` on the Invoke API allowing unmodified Lambda Container Images to be deployed as OpenFaaS Functions.
 
-The example [kind-openfaas](examples/kubernetes/kind-openfaas) illustrates standing up a local kubernetes cluster with [kind](https://kind.sigs.k8s.io/) then deploying [OpenFaaS](https://www.openfaas.com/) to it and deploying Lambda Container Images bundled with the Runtime API Daemon configured to act as an OpenFaaS Function watchdog.
+The example [kind-openfaas](examples/kubernetes/kind-openfaas) illustrates standing up a local Kubernetes cluster with [kind](https://kind.sigs.k8s.io/) then deploying [OpenFaaS](https://www.openfaas.com/) to it and deploying Lambda Container Images bundled with the Runtime API Daemon configured to act as an OpenFaaS Function watchdog.
 
 ## Configuration
 The primary means of configuring the Lambda Runtime API Daemon and Lambda Server is through environment variables.

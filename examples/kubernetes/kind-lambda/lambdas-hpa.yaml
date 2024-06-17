@@ -1,0 +1,312 @@
+# 
+# Deploy with:
+# kubectl apply -f lambdas-hpa.yaml
+#
+# Remove with:
+# kubectl delete -f lambdas-hpa.yaml
+#
+
+# Deploy echo-lambda
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: echo-lambda
+  namespace: lambda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: echo-lambda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: echo-lambda
+    spec:
+      securityContext:
+        # Arbitrary uid. For systems that automatically run as a non-root
+        # user like Openshift this likely isn't needed.
+        runAsUser: 1000
+      # When configured as an initContainer (with KUBERNETES_INIT_CONTAINER set)
+      # the Runtime API Daemon copies itself, e.g the lambda-runtime-api-daemon
+      # executable, to /tmp and then exits. This allows the executable to be
+      # written to a volume and subsequently "injected" into the Lambda
+      # Container. We write it to /usr/local/bin/aws-lambda-rie because AWS
+      # images bundle the Runtime Image Emulator and the Runtime API Daemon
+      # replaces that, allowing unmodified AWS base images to be used.
+      initContainers:
+        - name: lambda-runtime-api-daemon
+          image: localhost:5000/lambda-runtime-api-daemon
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: KUBERNETES_INIT_CONTAINER # Just needs to be set
+          volumeMounts:
+          - name: lambda-runtime-api-daemon
+            mountPath: /tmp
+      containers:
+        - name: echo-lambda
+          image: localhost:5000/echo-lambda
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: AWS_LAMBDA_FUNCTION_NAME
+            #value: echo-lambda
+            # For variety set the value of this from the labels.
+            # https://kubernetes.io/docs/concepts/workloads/pods/downward-api/
+            # It might be nice to do this from the Deployment name, but I don't
+            # believe that this is supported so using the label is a compromise.
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app.kubernetes.io/name']
+          - name: AWS_LAMBDA_FUNCTION_TIMEOUT
+            value: "60"
+          - name: AMQP_URI
+            value: amqp://rabbitmq.messaging:5672
+          volumeMounts:
+            # Mount lambda-runtime-api-daemon as /usr/local/bin/aws-lambda-rie
+            # so we may use unmodified AWS base images if we wish.
+          - name: lambda-runtime-api-daemon
+            mountPath: /usr/local/bin/aws-lambda-rie
+            subPath: lambda-runtime-api-daemon
+            # Give the Lambda a writeable /tmp
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: lambda-runtime-api-daemon
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+
+---
+# Deploy image-greyscale-lambda
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: image-greyscale-lambda
+  namespace: lambda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: image-greyscale-lambda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: image-greyscale-lambda
+    spec:
+      securityContext:
+        # Arbitrary uid. For systems that automatically run as a non-root
+        # user like Openshift this likely isn't needed.
+        runAsUser: 1000
+      # When configured as an initContainer (with KUBERNETES_INIT_CONTAINER set)
+      # the Runtime API Daemon copies itself, e.g the lambda-runtime-api-daemon
+      # executable, to /tmp and then exits. This allows the executable to be
+      # written to a volume and subsequently "injected" into the Lambda
+      # Container. We write it to /usr/local/bin/aws-lambda-rie because AWS
+      # images bundle the Runtime Image Emulator and the Runtime API Daemon
+      # replaces that, allowing unmodified AWS base images to be used.
+      initContainers:
+        - name: lambda-runtime-api-daemon
+          image: localhost:5000/lambda-runtime-api-daemon
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: KUBERNETES_INIT_CONTAINER # Just needs to be set
+          volumeMounts:
+          - name: lambda-runtime-api-daemon
+            mountPath: /tmp
+      containers:
+        - name: image-greyscale-lambda
+          image: localhost:5000/image-greyscale-lambda
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: AWS_LAMBDA_FUNCTION_NAME
+            #value: image-greyscale-lambda
+            # For variety set the value of this from the labels.
+            # https://kubernetes.io/docs/concepts/workloads/pods/downward-api/
+            # It might be nice to do this from the Deployment name, but I don't
+            # believe that this is supported so using the label is a compromise.
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app.kubernetes.io/name']
+          - name: AWS_LAMBDA_FUNCTION_TIMEOUT
+            value: "60"
+          - name: AMQP_URI
+            value: amqp://rabbitmq.messaging:5672
+          volumeMounts:
+            # Mount lambda-runtime-api-daemon as /usr/local/bin/aws-lambda-rie
+            # so we may use unmodified AWS base images if we wish.
+          - name: lambda-runtime-api-daemon
+            mountPath: /usr/local/bin/aws-lambda-rie
+            subPath: lambda-runtime-api-daemon
+            # Give the Lambda a writeable /tmp
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: lambda-runtime-api-daemon
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+
+---
+# HPA for echo-lambda
+# https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#horizontalpodautoscaler-v2-autoscaling
+# Using the external metrics API allows us to query a different namespace
+# We set namespaced: false in the prometheus-adapter externalRules config, which
+# allows wildcarded namespace querying of the form:
+# kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/*/rabbitmq_queue_messages?labelSelector=queue%echo-lambda" | jq .
+# We can then specify a namespace if required as part of the label query, in
+# this case we use the kubernetes_namespace label
+kind: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+metadata:
+  name: echo-lambda-hpa
+  namespace: lambda
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    apiVersion: apps/v1
+    name: echo-lambda
+  #minReplicas: 0 # Scale to Zero needs HPAScaleToZero FeatureGate enabled in k8s
+  minReplicas: 1
+  maxReplicas: 50
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: rabbitmq_queue_messages
+        selector: 
+          matchLabels:
+            "kubernetes_namespace": "messaging"
+            "queue": "echo-lambda"
+      target:
+        # I *think* this means that the HPA should scale the deployment to
+        # ensure that there is 1 pod for every 100 messages in the queue
+        # e.g. the message backlog target per instance. So, for a value of
+        # 100 a 1000 message queue depth would cause a scale to 10 pods.
+        type: AverageValue
+        averageValue: 100
+        #type: Value
+        #value: 100
+  # The behavior field controls the scaling policies
+  # https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#scaling-policies
+  # https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#default-behavior
+  #behavior:
+  #  scaleDown:
+  #    stabilizationWindowSeconds: 300 # 5 minutes
+  #    policies:
+  #    - type: Percent
+  #      value: 100
+  #      periodSeconds: 15
+  #  scaleUp:
+  #    stabilizationWindowSeconds: 0
+  #    policies:
+  #    - type: Percent
+  #      value: 100
+  #      periodSeconds: 15
+  #    - type: Pods
+  #      value: 4
+  #      periodSeconds: 15
+  #    selectPolicy: Max
+
+---
+# HPA for image-greyscale-lambda
+# https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#horizontalpodautoscaler-v2-autoscaling
+# Using the external metrics API allows us to query a different namespace
+# We set namespaced: false in the prometheus-adapter externalRules config, which
+# allows wildcarded namespace querying of the form:
+# kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/*/rabbitmq_queue_messages?labelSelector=queue%image-greyscale-lambda" | jq .
+# We can then specify a namespace if required as part of the label query, in
+# this case we use the kubernetes_namespace label
+kind: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+metadata:
+  name: image-greyscale-lambda-hpa
+  namespace: lambda
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    apiVersion: apps/v1
+    name: image-greyscale-lambda
+  #minReplicas: 0 # Scale to Zero needs HPAScaleToZero FeatureGate enabled in k8s
+  minReplicas: 1
+  maxReplicas: 50
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: rabbitmq_queue_messages
+        selector: 
+          matchLabels:
+            "kubernetes_namespace": "messaging"
+            "queue": "image-greyscale-lambda"
+      target:
+        # I *think* this means that the HPA should scale the deployment to
+        # ensure that there is 1 pod for every 100 messages in the queue
+        # e.g. the message backlog target per instance. So, for a value of
+        # 100 a 1000 message queue depth would cause a scale to 10 pods.
+        type: AverageValue
+        averageValue: 100
+
+#-------------------------------------------------------------------------------
+# Original HPA version using custom metrics API. This approach required that
+# the scaled object+HPA and the metric being queried e.g. the rabbitmq queue
+# are in the same namespace, which isn't always convenient.
+# https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#horizontalpodautoscaler-v2-autoscaling
+#kind: HorizontalPodAutoscaler
+#apiVersion: autoscaling/v2
+#metadata:
+#  name: echo-lambda-hpa
+#  namespace: lambda
+#spec:
+#  scaleTargetRef:
+#    kind: Deployment
+#    apiVersion: apps/v1
+#    name: echo-lambda
+#  #minReplicas: 0 # Scale to Zero needs HPAScaleToZero FeatureGate enabled in k8s
+#  minReplicas: 1
+#  maxReplicas: 50
+#  metrics:
+#  - type: Object
+#    object:
+#      metric:
+#        name: rabbitmq_queue_messages
+#        selector: 
+#          matchLabels:
+#            "queue": "echo-lambda"
+#      describedObject:
+#        kind: Service
+#        apiVersion: "v1"
+#        name: rabbitmq
+#      target:
+#        # I *think* this means that the HPA should scale the deployment to
+#        # ensure that there is 1 pod for every 100 messages in the queue
+#        # e.g. the message backlog target per instance. So, for a value of
+#        # 100 a 1000 message queue depth would cause a scale to 10 pods.
+#        type: AverageValue
+#        averageValue: 100
+#        #type: Value
+#        #value: 100
+#-------------------------------------------------------------------------------
+

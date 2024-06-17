@@ -1,0 +1,581 @@
+# Install Prometheus Adapter in Kubernetes
+# Derived from the documentation in:
+# https://github.com/kubernetes-sigs/prometheus-adapter
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/docs/walkthrough.md
+# https://github.com/kubernetes-sigs/prometheus-adapter/tree/master/deploy/manifests
+# https://hackernoon.com/how-to-use-prometheus-adapter-to-autoscale-custom-metrics-deployments-p1p3tl0
+# https://aws.amazon.com/blogs/mt/automated-scaling-of-applications-running-on-eks-using-custom-metric-collected-by-amazon-prometheus-using-prometheus-adapter/
+# 
+# Deploy with:
+# kubectl apply -f prometheus-adapter.yaml
+#
+# Remove with:
+# kubectl delete -f prometheus-adapter.yaml
+#
+#
+# kubectl get apiservices | grep metrics
+# Should show metrics, custom and external metrics APIs deployed
+# v1beta1.custom.metrics.k8s.io          monitoring/prometheus-adapter   True
+# v1beta1.external.metrics.k8s.io        monitoring/prometheus-adapter   True
+# v1beta1.metrics.k8s.io                 monitoring/prometheus-adapter   True
+#
+# For Resource metrics
+# kubectl get --raw "/apis/metrics.k8s.io" | jq .
+# kubectl get --raw "/apis/metrics.k8s.io/v1beta1" | jq .
+# kubectl get --raw "/apis/metrics.k8s.io/v1beta1/nodes" | jq .
+# kubectl get --raw "/apis/metrics.k8s.io/v1beta1/pods" | jq .
+# kubectl top node
+# kubectl top pod -A
+# kubectl top pod -n monitoring
+# Note that these use the default adapter-config ConfigMap, which gets CPU
+# and memory metrics from node/pod that provides an equivalent to metrics-server
+#
+# For custom metrics (e.g. the rabbitmq_queue_messages configured in this example)
+# kubectl get --raw "/apis/custom.metrics.k8s.io" | jq .
+# kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1" | jq .
+
+# Get custom metrics value across all queues
+# kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/messaging/services/rabbitmq/rabbitmq_queue_messages" | jq .
+
+# Get custom metrics value for test_queue
+# kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/messaging/services/rabbitmq/rabbitmq_queue_messages?metricLabelSelector=queue%3Dtest_queue" | jq .
+# Get value for task_queue
+# kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/messaging/services/rabbitmq/rabbitmq_queue_messages?metricLabelSelector=queue%3Dtask_queue" | jq .
+#
+#
+# For external metrics (e.g. the rabbitmq_queue_messages configured in this example)
+# kubectl get --raw "/apis/external.metrics.k8s.io" | jq .
+# kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1" | jq .
+
+# Get external metrics value across all queues
+# kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/messaging/rabbitmq_queue_messages" | jq .
+
+# Get external metrics value for test_queue NOTE the use of labelSelector for
+# the query whereas custom metrics used metricLabelSelector - very confusing!!!!
+# kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/messaging/rabbitmq_queue_messages?labelSelector=queue%test_queue" | jq .
+# Get external metrics value for task_queue
+# kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/messaging/rabbitmq_queue_messages?labelSelector=queue%3Dtask_queue" | jq .
+#
+# With namespaced: false set in the externalRules the query can be
+# kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/*/rabbitmq_queue_messages?labelSelector=queue%test_queue" | jq .
+# Get external metrics value for task_queue
+# kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/*/rabbitmq_queue_messages?labelSelector=queue%3Dtask_queue" | jq .
+
+
+# Create ServiceAccount
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/service-account.yaml
+kind: ServiceAccount
+apiVersion: v1
+automountServiceAccountToken: false
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: prometheus-adapter
+  namespace: monitoring
+
+---
+# Create ClusterRole aggregated-metrics-reader
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/cluster-role-aggregated-metrics-reader.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+  name: system:aggregated-metrics-reader
+  namespace: monitoring
+rules:
+- apiGroups:
+  - metrics.k8s.io
+  resources:
+  - pods
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+
+---
+# Create ClusterRole
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/cluster-role.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: prometheus-adapter
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - namespaces
+  - pods
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+
+---
+# Create ClusterRole metrics-server-resources
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/cluster-role-metrics-server-resources.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: resource-metrics-server-resources
+rules:
+- apiGroups:
+  - metrics.k8s.io
+  resources:
+  - '*'
+  verbs:
+  - '*'
+
+---
+# Create RoleBinding auth-reader
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/role-binding-auth-reader.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: resource-metrics-auth-reader
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: prometheus-adapter
+  namespace: monitoring
+
+---
+# Create ClusterRoleBinding delegator
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/cluster-role-binding-delegator.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: resource-metrics:system:auth-delegator
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: prometheus-adapter
+  namespace: monitoring
+
+---
+# Create ClusterRoleBinding
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/cluster-role-binding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: prometheus-adapter
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-adapter
+subjects:
+- kind: ServiceAccount
+  name: prometheus-adapter
+  namespace: monitoring
+
+---
+# Create ClusterRoleBinding hpa-custom-metrics
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/cluster-role-binding-hpa-custom-metrics.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: hpa-controller-custom-metrics
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: custom-metrics-server-resources
+subjects:
+- kind: ServiceAccount
+  name: horizontal-pod-autoscaler
+  namespace: kube-system
+
+---
+# Expose Service
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: prometheus-adapter
+  namespace: monitoring
+spec:
+  ports:
+  - name: https
+    port: 443
+    targetPort: 6443
+  selector:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+
+---
+# Create adapter config file as a ConfigMap
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/config-map.yaml
+# Note that to get 'kubectl top node' to work I had to change the "node" in
+# the resources/overrides in the config to use "instance".
+# Weirdly this https://github.com/kubernetes-sigs/prometheus-adapter/issues/385
+# seems to suggest the opposite (as in use "node") but
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: adapter-config
+  namespace: monitoring
+data:
+  config.yaml: |-
+    # The resourceRules configures the resource metrics queries, the ones you
+    # see when executing kubectl top pod or kubectl top node.
+    # These are necessary if HPA scaling on CPU or memory is required and
+    # provides equivalent behaviour to metrics-server
+    resourceRules:
+      cpu:
+        containerLabel: container
+        containerQuery: |
+          sum by (<<.GroupBy>>) (
+            irate (
+                container_cpu_usage_seconds_total{<<.LabelMatchers>>,container!="",pod!=""}[4m]
+            )
+          )
+        nodeQuery: |
+          sum by (<<.GroupBy>>) (
+            irate(
+                node_cpu_usage_seconds_total{<<.LabelMatchers>>}[4m]
+            )
+          )
+        resources:
+          overrides:
+            namespace:
+              resource: namespace
+            #node:
+            instance:
+              resource: node
+            pod:
+              resource: pod
+      memory:
+        containerLabel: container
+        containerQuery: |
+          sum by (<<.GroupBy>>) (
+            container_memory_working_set_bytes{<<.LabelMatchers>>,container!="",pod!=""}
+          )
+        nodeQuery: |
+          sum by (<<.GroupBy>>) (
+            node_memory_working_set_bytes{<<.LabelMatchers>>}
+          )
+        resources:
+          overrides:
+            namespace:
+              resource: namespace
+            #node:
+            instance:
+              resource: node
+            pod:
+              resource: pod
+      window: 5m
+    # 
+    # This first approach has each rabbitmq queue configured as a separate named
+    # rule, e.g. in this case task_queue and test_queue, when deployed they
+    # may be queried in the appropriate namespace and service by name e.g.
+    # kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/messaging/services/rabbitmq/test_queue" | jq .
+    # kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/messaging/services/rabbitmq/task_queue" | jq .
+    # It's inflexible though, as each queue we wish to scale on requires its own
+    # rule, which is fine for a static topology but bad for a dynamic topology.
+    #rules:
+    #- seriesQuery: 'rabbitmq_queue_messages{app_kubernetes_io_name!="",kubernetes_namespace!=""}'
+    #  resources:
+    #    overrides:
+    #      kubernetes_namespace: {resource: "namespace"}
+    #      app_kubernetes_io_name: {resource: "service"}
+    #  metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>,queue="task_queue"}) by (<<.GroupBy>>)'
+    #  name:
+    #    as: "task_queue"
+    #- seriesQuery: 'rabbitmq_queue_messages{app_kubernetes_io_name!="",kubernetes_namespace!=""}'
+    #  resources:
+    #    overrides:
+    #      kubernetes_namespace: {resource: "namespace"}
+    #      app_kubernetes_io_name: {resource: "service"}
+    #  metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>,queue="test_queue"}) by (<<.GroupBy>>)'
+    #  name:
+    #    as: "test_queue"
+    #
+    # With this second approach we do a more general query of
+    # rabbitmq_queue_messages however we refine it using a label selector, e.g.:
+    # Get value for test_queue
+    # kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/messaging/services/rabbitmq/rabbitmq_queue_messages?metricLabelSelector=queue%3Dtest_queue" | jq .
+    # Get value for task_queue
+    # kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/messaging/services/rabbitmq/rabbitmq_queue_messages?metricLabelSelector=queue%3Dtask_queue" | jq .
+    #rules:
+    #- seriesQuery: 'rabbitmq_queue_messages{app_kubernetes_io_name!="",kubernetes_namespace!=""}'
+    #  resources:
+    #    overrides:
+    #      kubernetes_namespace: {resource: "namespace"}
+    #      app_kubernetes_io_name: {resource: "service"}
+    #  metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+    #
+    #
+    #
+    # One further issue is that ideally we'd like HPA to be able to query
+    # metrics in a different namespace than the resource being controlled by
+    # the HPA. That seems to require using external rather than custom metrics.
+    # https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/docs/externalmetrics.md
+    # setting namespaced: false in the resources section of the external rule
+    #
+    # kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/messaging/rabbitmq_queue_messages?labelSelector=queue%test_queue" | jq .
+    # Get external metrics value for task_queue
+    # kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/messaging/rabbitmq_queue_messages?labelSelector=queue%3Dtask_queue" | jq .
+    #externalRules:
+    #- seriesQuery: 'rabbitmq_queue_messages{kubernetes_namespace!=""}'
+    #  resources:
+    #    overrides:
+    #      kubernetes_namespace: {resource: "namespace"}
+    #  metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+    externalRules:
+    - seriesQuery: 'rabbitmq_queue_messages'
+      resources:
+        namespaced: false
+      metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+
+---
+# Create Deployment
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/deployment.yaml
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: prometheus-adapter
+  namespace: monitoring
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: metrics-adapter
+      app.kubernetes.io/name: prometheus-adapter
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: metrics-adapter
+        app.kubernetes.io/name: prometheus-adapter
+        app.kubernetes.io/version: 0.11.2
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - args:
+        - --cert-dir=/var/run/serving-cert
+        - --config=/etc/adapter/config.yaml
+        - --metrics-relist-interval=1m
+        #- --prometheus-url=https://prometheus.monitoring.svc:9090/
+        - --prometheus-url=http://prometheus.monitoring.svc:9090/
+        - --secure-port=6443
+        - --tls-cipher-suites=TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,TLS_RSA_WITH_AES_128_GCM_SHA256,TLS_RSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_128_CBC_SHA,TLS_RSA_WITH_AES_256_CBC_SHA
+        image: registry.k8s.io/prometheus-adapter/prometheus-adapter:v0.11.2
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /livez
+            port: https
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 5
+        name: prometheus-adapter
+        ports:
+        - containerPort: 6443
+          name: https
+        readinessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /readyz
+            port: https
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 102m
+            memory: 180Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmpfs
+          readOnly: false
+        - mountPath: /var/run/serving-cert
+          name: volume-serving-cert
+          readOnly: false
+        - mountPath: /etc/adapter
+          name: config
+          readOnly: false
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext: {}
+      serviceAccountName: prometheus-adapter
+      volumes:
+      - emptyDir: {}
+        name: tmpfs
+      - emptyDir: {}
+        name: volume-serving-cert
+      - configMap:
+          name: adapter-config
+        name: config
+
+---
+# Create resource metrics APIService
+# Used for CPU/Memory metrics. If metrics-server is being used for those
+# then remove/comment out this APIService as it conflicts with metrics-server
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/api-service.yaml
+kind: APIService
+apiVersion: apiregistration.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: v1beta1.metrics.k8s.io
+spec:
+  group: metrics.k8s.io
+  groupPriorityMinimum: 100
+  insecureSkipTLSVerify: true
+  service:
+    name: prometheus-adapter
+    namespace: monitoring
+  version: v1beta1
+  versionPriority: 100
+
+---
+# Create custom metrics APIService
+kind: APIService
+apiVersion: apiregistration.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: v1beta1.custom.metrics.k8s.io
+spec:
+  group: custom.metrics.k8s.io
+  groupPriorityMinimum: 100
+  insecureSkipTLSVerify: true
+  service:
+    name: prometheus-adapter
+    namespace: monitoring
+  version: v1beta1
+  versionPriority: 100
+
+---
+# Create external metrics APIService
+kind: APIService
+apiVersion: apiregistration.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics-adapter
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/version: 0.11.2
+  name: v1beta1.external.metrics.k8s.io
+spec:
+  group: external.metrics.k8s.io
+  groupPriorityMinimum: 100
+  insecureSkipTLSVerify: true
+  service:
+    name: prometheus-adapter
+    namespace: monitoring
+  version: v1beta1
+  versionPriority: 100
+
+---
+# Create NetworkPolicy
+# This doesn't _seem_ to be needed, comment out rather than delete for now
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/network-policy.yaml
+#kind: NetworkPolicy
+#apiVersion: networking.k8s.io/v1
+#metadata:
+#  labels:
+#    app.kubernetes.io/component: metrics-adapter
+#    app.kubernetes.io/name: prometheus-adapter
+#    app.kubernetes.io/version: 0.11.2
+#  name: prometheus-adapter
+#  namespace: monitoring
+#spec:
+#  egress:
+#  - {}
+#  ingress:
+#  - {}
+#  podSelector:
+#    matchLabels:
+#      app.kubernetes.io/component: metrics-adapter
+#      app.kubernetes.io/name: prometheus-adapter
+#  policyTypes:
+#  - Egress
+#  - Ingress
+
+---
+# Create PodDisruptionBudget
+# This doesn't _seem_ to be needed, comment out rather than delete for now
+# https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/deploy/manifests/pod-disruption-budget.yaml
+#kind: PodDisruptionBudget
+#apiVersion: policy/v1
+#metadata:
+#  labels:
+#    app.kubernetes.io/component: metrics-adapter
+#    app.kubernetes.io/name: prometheus-adapter
+#    app.kubernetes.io/version: 0.11.2
+#  name: prometheus-adapter
+#  namespace: monitoring
+#spec:
+#  minAvailable: 1
+#  selector:
+#    matchLabels:
+#      app.kubernetes.io/component: metrics-adapter
+#      app.kubernetes.io/name: prometheus-adapter
+

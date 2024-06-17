@@ -1,0 +1,283 @@
+# Install RabbitMQ in Kubernetes (clustered version).
+# Derived from the documentation in:
+# https://blog.rabbitmq.com/posts/2020/08/deploying-rabbitmq-to-kubernetes-whats-involved/
+# https://github.com/rabbitmq/diy-kubernetes-examples/tree/master/kind
+# https://curiouslynerdy.com/piloting-rabbitmq-with-kubernetes/
+# 
+# Deploy with:
+# kubectl apply -f rabbitmq-cluster.yaml
+#
+# Remove with:
+# kubectl delete -f rabbitmq-cluster.yaml
+
+# Create messaging Namespace
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: messaging
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: rabbitmq
+  namespace: messaging 
+---
+# Create RBAC for peer discovery API calls
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: rabbitmq-peer-discovery-rbac
+  namespace: messaging 
+rules:
+- apiGroups: 
+  - ""
+  resources: 
+  - endpoints
+  verbs: 
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: rabbitmq-peer-discovery-rbac
+  namespace: messaging
+subjects:
+- kind: ServiceAccount
+  #name: default
+  name: rabbitmq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-peer-discovery-rbac
+---
+# Create config file as a ConfigMap
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: rabbitmq-config
+  namespace: messaging
+data:
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_prometheus,rabbitmq_peer_discovery_k8s].
+
+  rabbitmq.conf: |
+    ## Cluster formation. See https://www.rabbitmq.com/cluster-formation.html to learn more.
+    cluster_formation.peer_discovery_backend = rabbit_peer_discovery_k8s
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    ## Should RabbitMQ node name be computed from the pod's hostname or IP address?
+    ## IP addresses are not stable, so using [stable] hostnames is recommended when possible.
+    ## Set to "hostname" to use pod hostnames.
+    ## When this value is changed, so should the variable used to set the RABBITMQ_NODENAME
+    ## environment variable.
+    #log.file.level = debug
+    log.console = true
+    #log.console.level = debug
+    cluster_formation.k8s.address_type = hostname
+    ## How often should node cleanup checks run?
+    cluster_formation.node_cleanup.interval = 30
+    ## Set to false if automatic removal of unknown/absent nodes
+    ## is desired. This can be dangerous, see
+    ##  * https://www.rabbitmq.com/cluster-formation.html#node-health-checks-and-cleanup
+    ##  * https://groups.google.com/forum/#!msg/rabbitmq-users/wuOfzEywHXo/k8z_HWIkBgAJ
+    cluster_formation.node_cleanup.only_log_warning = true
+    cluster_partition_handling = autoheal
+    ## See https://www.rabbitmq.com/ha.html#master-migration-data-locality
+    queue_master_locator=min-masters
+    #
+    ## This enables remote access for the default user with well known credentials.
+    ## Consider deleting the default user and creating a separate user with a set of generated
+    ## credentials instead.
+    ## Learn more at https://www.rabbitmq.com/access-control.html#loopback-users
+    loopback_users.guest = false
+    ## This increases the delivery acknowledgement timeout.
+    ## https://www.rabbitmq.com/consumers.html#acknowledgement-timeout
+    ## 30 minute ack timeout in milliseconds
+    #consumer_timeout = 1800000
+    ## Long ack timeout
+    consumer_timeout = 4294967296
+    ## This configures the prometheus metrics plugin
+    ## https://www.rabbitmq.com/prometheus.html#listener
+    ## https://github.com/rabbitmq/rabbitmq-server/blob/main/deps/rabbitmq_prometheus/README.md
+    #prometheus.return_per_object_metrics = false
+    prometheus.return_per_object_metrics = true
+    #prometheus.tcp.port = 9091
+    prometheus.tcp.port = 15692 # Default value
+
+---
+# Deploy rabbitmq - note the use of a StatefulSet for cluster deployment/
+# See the Prerequisites section of https://www.rabbitmq.com/cluster-formation.html#peer-discovery-k8s.
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: rabbitmq
+  namespace: messaging
+  labels:
+    app.kubernetes.io/name: rabbitmq
+spec:
+  # serviceName is the name of the service that governs this StatefulSet.
+  # This service must exist before the StatefulSet, and is responsible for the
+  # network identity of the set. Pods get DNS/hostnames that follow the
+  # pattern: pod-specific-string.serviceName.default.svc.cluster.local where
+  # "pod-specific-string" is managed by the StatefulSet controller.
+  serviceName: rabbitmq
+  # Three nodes is the recommended minimum. Some features may require a
+  # majority of nodes to be available.
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  volumeClaimTemplates:
+  - metadata:
+      name: data-volume
+      namespace: messaging
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 1Gi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+      annotations:
+        prometheus.io/port: "15692"
+        prometheus.io/scrape: "true"
+        #prometheus.io/path: "/metrics"
+    # https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#PodSpec
+    spec:
+      # ServiceAccountName is the name of the ServiceAccount to use to run this
+      # pod. Here we use the rabbitmq ServiceAccount we defined earlier. If
+      # serviceAccountName is not specified the default ServiceAccount is used
+      serviceAccountName: rabbitmq
+      terminationGracePeriodSeconds: 10
+      nodeSelector:
+        # Use Linux nodes in a mixed OS kubernetes cluster.
+        # Learn more at https://kubernetes.io/docs/reference/kubernetes-api/labels-annotations-taints/#kubernetes-io-os
+        kubernetes.io/os: linux
+      volumes:
+        - name: config-volume
+          configMap:
+            name: rabbitmq-config
+            items:
+            - key: rabbitmq.conf
+              path: rabbitmq.conf
+            - key: enabled_plugins
+              path: enabled_plugins
+
+      containers:
+        - image: bitnami/rabbitmq:3.13.3
+          name: bitnami-rabbitmq
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: BITNAMI_DEBUG
+            value: "true"
+          - name: MY_POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: MY_POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: RABBITMQ_USE_LONGNAME
+            value: "true"
+          - name: K8S_SERVICE_NAME
+            value: rabbitmq
+          - name: K8S_HOSTNAME_SUFFIX
+            value: .$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local
+          - name: RABBITMQ_NODENAME
+            value: rabbit@$(MY_POD_NAME)$(K8S_HOSTNAME_SUFFIX)
+          - name: RABBITMQ_ERLANG_COOKIE
+            value: "mycookie"
+          # Learn more about what ports various protocols use
+          # at https://www.rabbitmq.com/networking.html#ports
+          # ports specified here is purely informational. Not specifying a port
+          # here DOES NOT prevent that port from being exposed. 
+          # https://faun.pub/should-i-configure-the-ports-in-kubernetes-deployment-c6b3817e495
+          # https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#ports
+          ports:
+            - name: http
+              protocol: TCP
+              containerPort: 15672
+            - name: metrics
+              protocol: TCP
+              containerPort: 15692
+            - name: amqp
+              protocol: TCP
+              containerPort: 5672
+          volumeMounts:
+          - name: config-volume
+            mountPath: /bitnami/rabbitmq/conf
+            # rabbitmq data directory
+          - name: data-volume
+            mountPath: /bitnami/rabbitmq/mnesia
+          # livenessProbe and readinessProbe are needed in a clustered setup
+          # to ensure that RMQ nodes start in a controlled way. Without these
+          # RMQ node pods can appear to start OK but don't correctly join
+          # the cluster due to a race condition.
+          # https://www.rabbitmq.com/cluster-formation.html#initial-formation-race-condition
+          livenessProbe:
+            exec:
+              # This is just an example. There is no "one true health check",
+              # rather several rabbitmq-diagnostics commands may be combined
+              # to form increasingly comprehensive and intrusive health checks.
+              # See https://www.rabbitmq.com/monitoring.html#health-checks.
+              #
+              # https://www.rabbitmq.com/monitoring.html#individual-checks
+              # Stage 2 check:
+              command: ["rabbitmq-diagnostics", "status"]
+            initialDelaySeconds: 60
+            # for monitoring frequency recommendations see:
+            # https://www.rabbitmq.com/monitoring.html
+            periodSeconds: 60
+            timeoutSeconds: 15
+          readinessProbe:
+            exec:
+              # This is just an example. There is no "one true health check",
+              # rather several rabbitmq-diagnostics commands may be combined
+              # to form increasingly comprehensive and intrusive health checks.
+              # See https://www.rabbitmq.com/monitoring.html#health-checks.
+              #
+              # https://www.rabbitmq.com/monitoring.html#individual-checks
+              # Stage 1 check:
+              command: ["rabbitmq-diagnostics", "ping"]
+            initialDelaySeconds: 20
+            periodSeconds: 60
+            timeoutSeconds: 10
+
+---
+# Expose rabbitmq deployment as a nodeport service type
+kind: Service
+apiVersion: v1
+metadata:
+  name: rabbitmq
+  namespace: messaging
+spec:
+  type: NodePort
+  ports:
+   - name: http
+     protocol: TCP
+     port: 15672
+     targetPort: 15672
+     nodePort: 31672
+   - name: metrics
+     protocol: TCP
+     port: 15692
+     targetPort: 15692
+     nodePort: 31673
+   - name: amqp
+     protocol: TCP
+     port: 5672
+     targetPort: 5672
+     nodePort: 30672
+  selector:
+    app.kubernetes.io/name: rabbitmq

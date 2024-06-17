@@ -1,0 +1,227 @@
+# The other example Lambda Deployments: lambdas-hpa.yaml, lambdas-keda.yaml and
+# lambdas-keda-prometheus-trigger.yaml all make use of Kubernetes native
+# Horizontal Pod Autoscalling using different triggering approaches based on
+# the AMQP queue depth. This will result in Lambda Pods scaling to meet demand.
+#
+# This example illustrates an alternative approach. The Lambda Runtime API
+# Daemon has a configurable MAX_CONCURRENCY setting which controls the number
+# of Lambda Runtime processes that the Daemon will spawn.
+#
+# Each Lambda Runtime instance has a concurrency of exactly one, so a Runtime
+# instance will run exactly one invocation to completion at a time and Lambda
+# generally scales by creating additional Execution Environments, which is the
+# approach used in the Horizontal Pod Autoscalling examples. However, the
+# Lambda Runtime API Daemon only spawns Runtime instances when needed and
+# although the default behaviour is to spawn a single Runtime instance it can
+# be configured to spawn instances whenever an invocation would block e.g.
+# where more concurrency would be needed to successfully service the invocation.
+#
+# In other words with this model there may be multiple Runtime instances
+# running in a single Execution Environment, although each individual Runtime
+# instance still has a concurrency of one.
+#
+# There are relative pros and cons of using this approach vice HPA. The pros
+# are that it will scale *much* faster than k8s spawning Pods, also k8s nodes
+# often have relatively modest Pod limits of 128-256 Pods, which will restrict
+# really high concurrency levels. Spawning Runtimes simply involves execing
+# a process, so it uses much fewer system resources compared to spawning a Pod
+# and doesn't require infrastructure like KEDA or Prometheus Adapter and the
+# k8s External Metrics API which may be advantageous on a shared managed k8s.
+# The biggest con of this approach is that it deviates from the one Lambda
+# Runtime instance per Execution Environment model, although each Runtime
+# instance still has a concurrency of exactly one. For most Lambdas this should
+# not matter, but where External Extensions are used they may need to be coded
+# to cater for this and so some off the shelf extensions may not work as
+# expected. Each Runtime and External Extension spawned has an INSTANCE
+# environment variable set so that it is possible to associate the Runtime and
+# External Extension instances.
+#
+# In general using MAX_CONCURRENCY rather than HPA is likely to yield most
+# benefit for the case of workloads that are primarily I/O bound. It is also
+# worth noting that the two approaches are complementary not mutually exclusive,
+# so it is possible to set a modest MAX_CONCURRENCY and also employ HPA.
+# 
+# Deploy with:
+# kubectl apply -f lambdas-max-concurrency.yaml
+#
+# Remove with:
+# kubectl delete -f lambdas-max-concurrency.yaml
+#
+
+# Deploy echo-lambda
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: echo-lambda
+  namespace: lambda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: echo-lambda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: echo-lambda
+    spec:
+      securityContext:
+        # Arbitrary uid. For systems that automatically run as a non-root
+        # user like Openshift this likely isn't needed.
+        runAsUser: 1000
+      # When configured as an initContainer (with KUBERNETES_INIT_CONTAINER set)
+      # the Runtime API Daemon copies itself, e.g the lambda-runtime-api-daemon
+      # executable, to /tmp and then exits. This allows the executable to be
+      # written to a volume and subsequently "injected" into the Lambda
+      # Container. We write it to /usr/local/bin/aws-lambda-rie because AWS
+      # images bundle the Runtime Image Emulator and the Runtime API Daemon
+      # replaces that, allowing unmodified AWS base images to be used.
+      initContainers:
+        - name: lambda-runtime-api-daemon
+          image: localhost:5000/lambda-runtime-api-daemon
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: KUBERNETES_INIT_CONTAINER # Just needs to be set
+          volumeMounts:
+          - name: lambda-runtime-api-daemon
+            mountPath: /tmp
+      containers:
+        - name: echo-lambda
+          image: localhost:5000/echo-lambda
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: AWS_LAMBDA_FUNCTION_NAME
+            #value: echo-lambda
+            # For variety set the value of this from the labels.
+            # https://kubernetes.io/docs/concepts/workloads/pods/downward-api/
+            # It might be nice to do this from the Deployment name, but I don't
+            # believe that this is supported so using the label is a compromise.
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app.kubernetes.io/name']
+          - name: AWS_LAMBDA_FUNCTION_TIMEOUT
+            value: "60"
+          - name: AMQP_URI
+            value: amqp://rabbitmq.messaging:5672
+            # Allow scaling up to 50 Lambda Runtime instances.
+            # Use AWS_LAMBDA_FUNCTION_IDLETIMEOUT to configure how quickly
+            # scale down will happen. The default for this is 1800 or 30 mins
+            # setting AWS_LAMBDA_FUNCTION_IDLETIMEOUT to 300 will scale down
+            # in a similar way to the default HPA stabilizationWindowSeconds.
+          - name: MAX_CONCURRENCY
+            value: "50"
+          volumeMounts:
+            # Mount lambda-runtime-api-daemon as /usr/local/bin/aws-lambda-rie
+            # so we may use unmodified AWS base images if we wish.
+          - name: lambda-runtime-api-daemon
+            mountPath: /usr/local/bin/aws-lambda-rie
+            subPath: lambda-runtime-api-daemon
+            # Give the Lambda a writeable /tmp
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: lambda-runtime-api-daemon
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+
+---
+# Deploy image-greyscale-lambda
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: image-greyscale-lambda
+  namespace: lambda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: image-greyscale-lambda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: image-greyscale-lambda
+    spec:
+      securityContext:
+        # Arbitrary uid. For systems that automatically run as a non-root
+        # user like Openshift this likely isn't needed.
+        runAsUser: 1000
+      # When configured as an initContainer (with KUBERNETES_INIT_CONTAINER set)
+      # the Runtime API Daemon copies itself, e.g the lambda-runtime-api-daemon
+      # executable, to /tmp and then exits. This allows the executable to be
+      # written to a volume and subsequently "injected" into the Lambda
+      # Container. We write it to /usr/local/bin/aws-lambda-rie because AWS
+      # images bundle the Runtime Image Emulator and the Runtime API Daemon
+      # replaces that, allowing unmodified AWS base images to be used.
+      initContainers:
+        - name: lambda-runtime-api-daemon
+          image: localhost:5000/lambda-runtime-api-daemon
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: KUBERNETES_INIT_CONTAINER # Just needs to be set
+          volumeMounts:
+          - name: lambda-runtime-api-daemon
+            mountPath: /tmp
+      containers:
+        - name: image-greyscale-lambda
+          image: localhost:5000/image-greyscale-lambda
+          securityContext:
+            # Run with all privileges removed and with a read only root filesystem
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: AWS_LAMBDA_FUNCTION_NAME
+            #value: image-greyscale-lambda
+            # For variety set the value of this from the labels.
+            # https://kubernetes.io/docs/concepts/workloads/pods/downward-api/
+            # It might be nice to do this from the Deployment name, but I don't
+            # believe that this is supported so using the label is a compromise.
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app.kubernetes.io/name']
+          - name: AWS_LAMBDA_FUNCTION_TIMEOUT
+            value: "60"
+          - name: AMQP_URI
+            value: amqp://rabbitmq.messaging:5672
+            # Allow scaling up to 50 Lambda Runtime instances.
+            # Use AWS_LAMBDA_FUNCTION_IDLETIMEOUT to configure how quickly
+            # scale down will happen. The default for this is 1800 or 30 mins
+            # setting AWS_LAMBDA_FUNCTION_IDLETIMEOUT to 300 will scale down
+            # in a similar way to the default HPA stabilizationWindowSeconds.
+          - name: MAX_CONCURRENCY
+            value: "50"
+          volumeMounts:
+            # Mount lambda-runtime-api-daemon as /usr/local/bin/aws-lambda-rie
+            # so we may use unmodified AWS base images if we wish.
+          - name: lambda-runtime-api-daemon
+            mountPath: /usr/local/bin/aws-lambda-rie
+            subPath: lambda-runtime-api-daemon
+            # Give the Lambda a writeable /tmp
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: lambda-runtime-api-daemon
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+

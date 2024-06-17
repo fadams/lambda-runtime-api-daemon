@@ -1,0 +1,157 @@
+# Install RabbitMQ in Kubernetes (non-cluster version).
+# Derived from the documentation in:
+# https://blog.rabbitmq.com/posts/2020/08/deploying-rabbitmq-to-kubernetes-whats-involved/
+# https://github.com/rabbitmq/diy-kubernetes-examples/tree/master/kind
+# 
+# Deploy with:
+# kubectl apply -f rabbitmq.yaml
+#
+# Remove with:
+# kubectl delete -f rabbitmq.yaml
+
+# Create messaging Namespace
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: messaging
+---
+# Create config file as a ConfigMap
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: rabbitmq-config
+  namespace: messaging
+data:
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_prometheus].
+
+  rabbitmq.conf: |
+    ## Cluster formation. See https://www.rabbitmq.com/cluster-formation.html to learn more.
+    #cluster_formation.peer_discovery_backend  = rabbit_peer_discovery_k8s
+    #cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    ## Should RabbitMQ node name be computed from the pod's hostname or IP address?
+    ## IP addresses are not stable, so using [stable] hostnames is recommended when possible.
+    ## Set to "hostname" to use pod hostnames.
+    ## When this value is changed, so should the variable used to set the RABBITMQ_NODENAME
+    ## environment variable.
+    #log.file.level = debug
+    #log.console = true
+    #log.console.level = debug
+    #cluster_formation.k8s.address_type = hostname
+    ## How often should node cleanup checks run?
+    #cluster_formation.node_cleanup.interval = 30
+    ## Set to false if automatic removal of unknown/absent nodes
+    ## is desired. This can be dangerous, see
+    ##  * https://www.rabbitmq.com/cluster-formation.html#node-health-checks-and-cleanup
+    ##  * https://groups.google.com/forum/#!msg/rabbitmq-users/wuOfzEywHXo/k8z_HWIkBgAJ
+    #cluster_formation.node_cleanup.only_log_warning = true
+    #cluster_partition_handling = autoheal
+    ## See https://www.rabbitmq.com/ha.html#master-migration-data-locality
+    #queue_master_locator=min-masters
+    #
+    ## This enables remote access for the default user with well known credentials.
+    ## Consider deleting the default user and creating a separate user with a set of generated
+    ## credentials instead.
+    ## Learn more at https://www.rabbitmq.com/access-control.html#loopback-users
+    loopback_users.guest = false
+    ## This increases the delivery acknowledgement timeout.
+    ## https://www.rabbitmq.com/consumers.html#acknowledgement-timeout
+    ## 30 minute ack timeout in milliseconds
+    #consumer_timeout = 1800000
+    ## Long ack timeout
+    consumer_timeout = 4294967296
+    ## This configures the prometheus metrics plugin
+    ## https://www.rabbitmq.com/prometheus.html#listener
+    ## https://github.com/rabbitmq/rabbitmq-server/blob/main/deps/rabbitmq_prometheus/README.md
+    #prometheus.return_per_object_metrics = false
+    prometheus.return_per_object_metrics = true
+    #prometheus.tcp.port = 9091
+    prometheus.tcp.port = 15692 # Default value
+
+---
+# Deploy rabbitmq
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: rabbitmq
+  namespace: messaging
+  labels:
+    app.kubernetes.io/name: rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+      annotations:
+        prometheus.io/port: "15692"
+        prometheus.io/scrape: "true"
+        #prometheus.io/path: "/metrics"
+    spec:
+      volumes:
+        - name: config-volume
+          configMap:
+            name: rabbitmq-config
+            items:
+            - key: rabbitmq.conf
+              path: rabbitmq.conf
+            - key: enabled_plugins
+              path: enabled_plugins
+
+      containers:
+        - image: bitnami/rabbitmq:3.13.3
+          name: bitnami-rabbitmq
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: BITNAMI_DEBUG
+            value: "true"
+          # Learn more about what ports various protocols use
+          # at https://www.rabbitmq.com/networking.html#ports
+          # ports specified here is purely informational. Not specifying a port
+          # here DOES NOT prevent that port from being exposed. 
+          # https://faun.pub/should-i-configure-the-ports-in-kubernetes-deployment-c6b3817e495
+          # https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#ports
+          ports:
+            - name: http
+              protocol: TCP
+              containerPort: 15672
+            - name: metrics
+              protocol: TCP
+              containerPort: 15692
+            - name: amqp
+              protocol: TCP
+              containerPort: 5672
+          volumeMounts:
+          - name: config-volume
+            mountPath: /bitnami/rabbitmq/conf
+
+---
+# Expose rabbitmq deployment as a nodeport service type
+kind: Service
+apiVersion: v1
+metadata:
+  name: rabbitmq
+  namespace: messaging
+spec:
+  type: NodePort
+  ports:
+   - name: http
+     protocol: TCP
+     port: 15672
+     targetPort: 15672
+     nodePort: 31672
+   - name: metrics
+     protocol: TCP
+     port: 15692
+     targetPort: 15692
+     nodePort: 31673
+   - name: amqp
+     protocol: TCP
+     port: 5672
+     targetPort: 5672
+     nodePort: 30672
+  selector:
+    app.kubernetes.io/name: rabbitmq
