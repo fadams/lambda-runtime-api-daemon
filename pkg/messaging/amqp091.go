@@ -251,7 +251,6 @@ func (conn *connectionAMQP091) IsClosed() bool {
 //		err := <-conn.CloseNotify()
 //		// Do something with err
 //	}()
-//
 func (conn *connectionAMQP091) CloseNotify() <-chan error {
 	conn.m.Lock()
 	defer conn.m.Unlock()
@@ -585,26 +584,26 @@ type destinationAMQP091 struct {
 //
 // Where options is of the form: { <key> : <value>, ... }
 //
-// And values may be numbers, strings, maps (dictionaries) or lists
+// # And values may be numbers, strings, maps (dictionaries) or lists
 //
 // The options map permits the following parameters:
 //
-// <name> [ / <subject> ] ; {
-//     node: {
-//         type: queue | topic,
-//         durable: True | False,
-//         auto-delete: True | False,
-//         x-declare: { ... <declare-overrides> ... },
-//         x-bindings: [<binding_1>, ... <binding_n>]
-//     },
-//     link: {
-//         name: <link-name>,
-//         durable: True | False,
-//         reliability: unreliable | at-most-once | at-least-once | exactly-once,
-//         x-declare: { ... <declare-overrides> ... },
-//         x-bindings: [<binding_1>, ... <binding_n>]
-//     }
-// }
+//	<name> [ / <subject> ] ; {
+//	    node: {
+//	        type: queue | topic,
+//	        durable: True | False,
+//	        auto-delete: True | False,
+//	        x-declare: { ... <declare-overrides> ... },
+//	        x-bindings: [<binding_1>, ... <binding_n>]
+//	    },
+//	    link: {
+//	        name: <link-name>,
+//	        durable: True | False,
+//	        reliability: unreliable | at-most-once | at-least-once | exactly-once,
+//	        x-declare: { ... <declare-overrides> ... },
+//	        x-bindings: [<binding_1>, ... <binding_n>]
+//	    }
+//	}
 //
 // The node refers to the AMQP node e.g. a queue or exchange being referred
 // to in the address, whereas the link allows configuration of a logical
@@ -613,12 +612,12 @@ type destinationAMQP091 struct {
 //
 // Bindings are specified as a map with the following options:
 //
-// {
-//     exchange: <exchange>,
-//     queue: <queue>,
-//     key: <key>,
-//     arguments: <arguments>
-// }
+//	{
+//	    exchange: <exchange>,
+//	    queue: <queue>,
+//	    key: <key>,
+//	    arguments: <arguments>
+//	}
 //
 // The x-declare map permits protocol specific keys and values to be
 // specified when exchanges or queues are declared. These keys and
@@ -652,7 +651,6 @@ type destinationAMQP091 struct {
 // For the case where the address comprises just the options string
 // the leading semicolon is optional e.g. the following is also valid:
 // {"node": {"x-declare": {"exchange": "news-service", "exchange-type": "topic"}}}
-//
 func (dst *destinationAMQP091) parseAddress(address string) error {
 	// Explicitly set default options values. Could have just set the non-zero,
 	// non-empty or true values for brevity, but it's useful to document the
@@ -806,11 +804,9 @@ func (dst *destinationAMQP091) parseAddress(address string) error {
 	return nil
 }
 
-// reconnect() blocks waiting for Connection and Session to reconnect and once
-// reconnected reestablishes the Connection and Session pools to required size.
+// reconnect() blocks waiting for Connection and Session to reconnect.
 func (dst *destinationAMQP091) reconnect() {
 	dst.session.Wait()
-	dst.session.createPool(dst.poolSize)
 	dst.closed = false
 }
 
@@ -995,6 +991,7 @@ func (prod *producerAMQP091) open() error {
 		log.Infof("Creating Producer with address: %s", prod.address)
 	}
 
+	prod.session.createPool(prod.poolSize)
 	err := prod.parseAddress(prod.address)
 	if err == nil {
 		declare := &prod.options.Node.Declare // Get reference to Declare
@@ -1187,9 +1184,10 @@ func (prod *producerAMQP091) Send(msg Message) {
 // deadlocking, which would block sends and also make reconnection unresponsive.
 //
 // returns := producer.Return() // or producer.Return(messaging.BufferSize(500000))
-// for message := range returns {
-//     <Do stuff with returned message here>
-// }
+//
+//	for message := range returns {
+//	    <Do stuff with returned message here>
+//	}
 func (prod *producerAMQP091) Return(opts ...func(*pool)) <-chan Message {
 	prod.m.Lock() // Avoid potential race on creating prod.returns chan
 	defer prod.m.Unlock()
@@ -1392,6 +1390,7 @@ func (cons *consumerAMQP091) start() {
 func (cons *consumerAMQP091) open() error {
 	log.Infof("Creating Consumer with address: %s", cons.address)
 
+	cons.session.createPool(cons.poolSize)
 	err := cons.parseAddress(cons.address)
 	if err == nil {
 		declare := &cons.options.Node.Declare      // Get reference to Node.Declare
@@ -1563,9 +1562,10 @@ func (cons *consumerAMQP091) SetCapacity(capacity int) error {
 
 // Consume returns a go channel that Messages will be dispatched to.
 // messages := consumer.Consume()
-// for message := range messages {
-//     <Do stuff with message here>
-// }
+//
+//	for message := range messages {
+//	    <Do stuff with message here>
+//	}
 func (cons *consumerAMQP091) Consume() <-chan Message {
 	cons.m.Lock() // Avoid potential race on creating cons.queue chan
 	defer cons.m.Unlock()

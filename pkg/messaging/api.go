@@ -69,7 +69,7 @@ var errDeliveryNotInitialized = errors.New("delivery not initialized")
 // variable options of different types to the NewConnection() factory,
 // for example:
 // connection, err := messaging.NewConnection("amqp://localhost:5672",
-//      messaging.Context(context.Background()))
+// messaging.Context(context.Background()))
 type connectionOpts struct {
 	ctx  context.Context
 	name string
