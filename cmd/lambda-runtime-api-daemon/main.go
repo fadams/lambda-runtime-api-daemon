@@ -41,15 +41,45 @@
 package main
 
 import (
+	"io"
 	"lambda-runtime-api-daemon/pkg/config/env"
 	"lambda-runtime-api-daemon/pkg/config/rapid"
 	"lambda-runtime-api-daemon/pkg/invokeapi"
 	"lambda-runtime-api-daemon/pkg/logging"
 	"lambda-runtime-api-daemon/pkg/process"
 	"lambda-runtime-api-daemon/pkg/runtimeapi"
+	"os"
+	"path"
 )
 
 func main() {
+	// KUBERNETES_INIT_CONTAINER being set is a special case that causes the
+	// Runtime API Daemon executable to copy itself to /tmp and then exit.
+	// The main use case for this is Kubernetes init containers, where we use
+	// an init container for the Runtime API Daemon so we can attach a volume
+	// and mount the Runtime API Daemon executable into the Lambda container.
+	//if strings.ToUpper(env.Getenv("KUBERNETES_INIT_CONTAINER", "")) == "TRUE" {
+	if _, ok := os.LookupEnv("KUBERNETES_INIT_CONTAINER"); ok {
+		// Get path name for the executable that started the current process.
+		if src, err := os.Executable(); err == nil {
+			if source, err := os.Open(src); err == nil { // Open the file
+				defer source.Close()
+				if stats, err := source.Stat(); err == nil { // Get permissions
+					dst := "/tmp/" + path.Base(src)
+					// Create destination file in /tmp with the same permissions
+					// as the source file, then copy source to destination.
+					if destination, err := os.Create(dst); err == nil {
+						defer destination.Close()
+						if destination.Chmod(stats.Mode()) == nil {
+							io.Copy(destination, source)
+						}
+					}
+				}
+			}
+		}
+		return
+	}
+
 	logging.SetLogLevel(env.Getenv("LOG_LEVEL", "INFO"))
 	cfg := rapid.GetConfig()
 
