@@ -17,7 +17,7 @@
 # under the License.
 #
 
-FROM golang:1.18 AS builder
+FROM golang:1.22 AS builder
 WORKDIR /go/src/lambda-runtime-api-daemon
 COPY . .
 RUN make dep && make daemon
@@ -32,3 +32,7 @@ ENTRYPOINT ["/usr/bin/lambda-runtime-api-daemon"]
 # in the parent directory.
 # docker build -t lambda-runtime-api-daemon -f ./Dockerfile-daemon ..
 #
+# Tag for local registry
+# docker tag lambda-runtime-api-daemon localhost:5000/lambda-runtime-api-daemon
+# or
+# docker build -t localhost:5000/lambda-runtime-api-daemon -f ./Dockerfile-daemon ..

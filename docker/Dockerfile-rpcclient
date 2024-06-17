@@ -17,7 +17,7 @@
 # under the License.
 #
 
-FROM golang:1.18 AS builder
+FROM golang:1.22 AS builder
 WORKDIR /go/src/lambda-runtime-api-daemon
 COPY . .
 RUN cd examples/echo/echo-clients && make dep && make rpcclient

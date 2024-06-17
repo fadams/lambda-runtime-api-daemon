@@ -17,13 +17,13 @@
 # under the License.
 #
 
-FROM golang:1.18 AS builder
-WORKDIR /go/src/lambda-server
+FROM golang:1.22 AS builder
+WORKDIR /go/src/lambda-runtime-api-daemon
 COPY . .
 RUN make dep && make server
 
 FROM scratch
-COPY --from=builder /go/src/lambda-server/bin/lambda-server /usr/bin/lambda-server
+COPY --from=builder /go/src/lambda-runtime-api-daemon/bin/lambda-server /usr/bin/lambda-server
 ENTRYPOINT ["/usr/bin/lambda-server"]
 
 #-------------------------------------------------------------------------------
@@ -32,3 +32,7 @@ ENTRYPOINT ["/usr/bin/lambda-server"]
 # in the parent directory.
 # docker build -t lambda-server -f ./Dockerfile-server ..
 #
+# Tag for local registry
+# docker tag lambda-server localhost:5000/lambda-server
+# or
+# docker build -t localhost:5000/lambda-server -f ./Dockerfile-server ..
