@@ -111,6 +111,8 @@ Currently supported environment variables specific to the Lambda Runtime API Dae
 * RUNTIME_API_HOST: The Runtime API address, default is 127.0.0.1.
 * RUNTIME_API_PORT: The Runtime API listen port, default is 9001.
 * AMQP_URI: The connection URI to an AMQP message broker (e.g. RabbitMQ). The default is unset, which disables AMQP-RPC support. When set the URI is of the format `amqp://username:password@host:port/virtual_host?key=value&key=value`, e.g. `amqp://guest:guest@localhost:5672?connection_attempts=20&retry_delay=10&heartbeat=0`.
+* AMQP_USERNAME: Username for connecting to AMQP broker. Used if not already set in AMQP_URI and if AMQP_PASSWORD is also set.
+* AMQP_PASSWORD: Password for connecting to AMQP broker. Used if not already set in AMQP_URI and if AMQP_USERNAME is also set.
 * MAX_CONCURRENCY: The maximum number of Lambda instances that may be launched *by this Runtime API Daemon instance*.
 * ENABLE_OPENFAAS: If set to true the additional routes `/`, `/_/health`, and `/_/ready` will be exposed by the Invoke API, which will make the Daemon emulate the OpenFaaS [watchdog](https://github.com/openfaas/of-watchdog) API allowing unmodified Lambda Container Images to be deployed as OpenFaaS Functions. Value is case insensitive TRUE or FALSE and the default value is FALSE.
 

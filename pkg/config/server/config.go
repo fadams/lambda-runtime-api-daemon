@@ -21,6 +21,7 @@ package server
 
 import (
 	"lambda-runtime-api-daemon/pkg/config/env"
+	"net/url"
 )
 
 const (
@@ -71,7 +72,11 @@ func GetConfig() *Config {
 	invokeAPIHost := env.Getenv("INVOKE_API_HOST", defaultInvokeAPIHost)
 	invokeAPIPort := env.Getenv("PORT", defaultInvokeAPIPort)
 
-	rpcServerURI := env.Getenv("AMQP_URI", defaultRPCServerURI)
+	amqpURI := env.Getenv("AMQP_URI", defaultRPCServerURI)
+	amqpUsername := env.Getenv("AMQP_USERNAME", "")
+	amqpPassword := env.Getenv("AMQP_PASSWORD", "")
+
+	rpcServerURI := injectAMQPCredentials(amqpURI, amqpUsername, amqpPassword)
 
 	timeout := env.GetenvInt(
 		"AWS_LAMBDA_FUNCTION_TIMEOUT",
@@ -85,4 +90,26 @@ func GetConfig() *Config {
 	}
 
 	return config
+}
+
+func injectAMQPCredentials(rawURI, username, password string) string {
+	parsed, err := url.Parse(rawURI)
+	if err != nil {
+		// If it's not a valid URL, fallback to raw URI
+		return rawURI
+	}
+
+	// If the URI already includes user info, return as-is
+	if parsed.User != nil {
+		return rawURI
+	}
+
+	// Only inject if both username and password are provided
+	if username != "" && password != "" {
+		parsed.User = url.UserPassword(username, password)
+		return parsed.String()
+	}
+
+	// No user info provided
+	return rawURI
 }

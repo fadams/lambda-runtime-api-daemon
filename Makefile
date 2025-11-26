@@ -40,5 +40,8 @@ clean:
 clean-dep:
 	rm -f go.sum
 
+test:
+	go test -v ./...
+
 .PHONY: all clean clean-dep dep docker format lint
 
