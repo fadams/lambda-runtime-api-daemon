@@ -8,6 +8,7 @@
 !pkg
 !Makefile
 !go.mod
+!config.json
 !examples/echo/echo-clients/Makefile
 !examples/echo/echo-clients/go.mod
 !examples/echo/echo-clients/rpcclient.go

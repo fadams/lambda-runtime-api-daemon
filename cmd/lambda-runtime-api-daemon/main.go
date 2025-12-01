@@ -42,8 +42,8 @@ package main
 
 import (
 	"io"
-	"lambda-runtime-api-daemon/pkg/config/env"
 	"lambda-runtime-api-daemon/pkg/config/rapid"
+	"lambda-runtime-api-daemon/pkg/config/util"
 	"lambda-runtime-api-daemon/pkg/invokeapi"
 	"lambda-runtime-api-daemon/pkg/logging"
 	"lambda-runtime-api-daemon/pkg/process"
@@ -58,7 +58,6 @@ func main() {
 	// The main use case for this is Kubernetes init containers, where we use
 	// an init container for the Runtime API Daemon so we can attach a volume
 	// and mount the Runtime API Daemon executable into the Lambda container.
-	//if strings.ToUpper(env.Getenv("KUBERNETES_INIT_CONTAINER", "")) == "TRUE" {
 	if _, ok := os.LookupEnv("KUBERNETES_INIT_CONTAINER"); ok {
 		// Get path name for the executable that started the current process.
 		if src, err := os.Executable(); err == nil {
@@ -80,7 +79,7 @@ func main() {
 		return
 	}
 
-	logging.SetLogLevel(env.Getenv("LOG_LEVEL", "INFO"))
+	logging.SetLogLevel(util.Getenv("LOG_LEVEL", "INFO"))
 	cfg := rapid.GetConfig()
 
 	// ProcessManager manages spawning and reaping Lambda/Extension processes.

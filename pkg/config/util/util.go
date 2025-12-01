@@ -17,9 +17,10 @@
 // under the License.
 //
 
-package env
+package util
 
 import (
+	"net/url"
 	"os"
 	"strconv"
 )
@@ -47,4 +48,26 @@ func GetenvInt(key string, fallback int) int {
 		return fallback
 	}
 	return fallback
+}
+
+func InjectAMQPCredentials(rawURI, username, password string) string {
+	parsed, err := url.Parse(rawURI)
+	if err != nil {
+		// If it's not a valid URL, fallback to raw URI
+		return rawURI
+	}
+
+	// If the URI already includes user info, return as-is
+	if parsed.User != nil {
+		return rawURI
+	}
+
+	// Only inject if both username and password are provided
+	if username != "" && password != "" {
+		parsed.User = url.UserPassword(username, password)
+		return parsed.String()
+	}
+
+	// No user info provided
+	return rawURI
 }

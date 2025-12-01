@@ -20,9 +20,13 @@
 package server
 
 import (
-	"lambda-runtime-api-daemon/pkg/config/env"
-	"net/url"
+	log "github.com/sirupsen/logrus" // Structured logging
+
+	"lambda-runtime-api-daemon/pkg/config/util"
 )
+
+// lambda-server version
+var version = "unknown" // will be overwritten by ldflags
 
 const (
 	// https://docs.aws.amazon.com/lambda/latest/dg/API_Invoke.html
@@ -69,19 +73,26 @@ type Config struct {
 // Most configurable fields are configured via environment variables and the
 // Config struct and this factory simply centralises this.
 func GetConfig() *Config {
-	invokeAPIHost := env.Getenv("INVOKE_API_HOST", defaultInvokeAPIHost)
-	invokeAPIPort := env.Getenv("PORT", defaultInvokeAPIPort)
+	invokeAPIHost := util.Getenv("INVOKE_API_HOST", defaultInvokeAPIHost)
+	invokeAPIPort := util.Getenv("PORT", defaultInvokeAPIPort)
 
-	amqpURI := env.Getenv("AMQP_URI", defaultRPCServerURI)
-	amqpUsername := env.Getenv("AMQP_USERNAME", "")
-	amqpPassword := env.Getenv("AMQP_PASSWORD", "")
+	// The connection URI to an AMQP message broker can either be set with a
+	// full amqp:// URI of the form:
+	// amqp://username:password@host:port/virtual_host?key=value&key=value
+	// or a shorter form URI amqp://host:port with username and password set
+	// separately via AMQP_USERNAME and AMQP_PASSWORD environment variables.
+	amqpURI := util.Getenv("AMQP_URI", defaultRPCServerURI)
+	amqpUsername := util.Getenv("AMQP_USERNAME", "")
+	amqpPassword := util.Getenv("AMQP_PASSWORD", "")
 
-	rpcServerURI := injectAMQPCredentials(amqpURI, amqpUsername, amqpPassword)
+	rpcServerURI := util.InjectAMQPCredentials(amqpURI, amqpUsername, amqpPassword)
 
-	timeout := env.GetenvInt(
+	timeout := util.GetenvInt(
 		"AWS_LAMBDA_FUNCTION_TIMEOUT",
 		AWS_LAMBDA_FUNCTION_TIMEOUT_DEFAULT,
 	)
+
+	log.Infof("Version: %s", version)
 
 	config := &Config{
 		InvokeAPIServerURI: invokeAPIHost + ":" + invokeAPIPort,
@@ -90,26 +101,4 @@ func GetConfig() *Config {
 	}
 
 	return config
-}
-
-func injectAMQPCredentials(rawURI, username, password string) string {
-	parsed, err := url.Parse(rawURI)
-	if err != nil {
-		// If it's not a valid URL, fallback to raw URI
-		return rawURI
-	}
-
-	// If the URI already includes user info, return as-is
-	if parsed.User != nil {
-		return rawURI
-	}
-
-	// Only inject if both username and password are provided
-	if username != "" && password != "" {
-		parsed.User = url.UserPassword(username, password)
-		return parsed.String()
-	}
-
-	// No user info provided
-	return rawURI
 }

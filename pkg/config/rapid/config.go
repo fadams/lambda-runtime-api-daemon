@@ -24,8 +24,11 @@ import (
 	"os"
 	"strings"
 
-	"lambda-runtime-api-daemon/pkg/config/env"
+	"lambda-runtime-api-daemon/pkg/config/util"
 )
+
+// lambda-runtime-api-daemon version
+var version = "unknown" // will be overwritten by ldflags
 
 const (
 	//defaultPrintReportsValue = "TRUE"
@@ -81,38 +84,49 @@ type Config struct {
 // Most configurable fields are configured via environment variables and the
 // Config struct and this factory simply centralises this.
 func GetConfig() *Config {
-	invokeAPIHost := env.Getenv("INVOKE_API_HOST", defaultInvokeAPIHost)
-	invokeAPIPort := env.Getenv("PORT", defaultInvokeAPIPort)
-	runtimeAPIHost := env.Getenv("RUNTIME_API_HOST", defaultRuntimeAPIHost)
-	runtimeAPIPort := env.Getenv("RUNTIME_API_PORT", defaultRuntimeAPIPort)
-	rpcServerURI := env.Getenv("AMQP_URI", defaultRPCServerURI)
-	name := env.Getenv("AWS_LAMBDA_FUNCTION_NAME", "")
-	version := env.Getenv(
+	invokeAPIHost := util.Getenv("INVOKE_API_HOST", defaultInvokeAPIHost)
+	invokeAPIPort := util.Getenv("PORT", defaultInvokeAPIPort)
+	runtimeAPIHost := util.Getenv("RUNTIME_API_HOST", defaultRuntimeAPIHost)
+	runtimeAPIPort := util.Getenv("RUNTIME_API_PORT", defaultRuntimeAPIPort)
+
+	// The connection URI to an AMQP message broker can either be set with a
+	// full amqp:// URI of the form:
+	// amqp://username:password@host:port/virtual_host?key=value&key=value
+	// or a shorter form URI amqp://host:port with username and password set
+	// separately via AMQP_USERNAME and AMQP_PASSWORD environment variables.
+	amqpURI := util.Getenv("AMQP_URI", defaultRPCServerURI)
+	amqpUsername := util.Getenv("AMQP_USERNAME", "")
+	amqpPassword := util.Getenv("AMQP_PASSWORD", "")
+
+	rpcServerURI := util.InjectAMQPCredentials(amqpURI, amqpUsername, amqpPassword)
+
+	name := util.Getenv("AWS_LAMBDA_FUNCTION_NAME", "")
+	functionVersion := util.Getenv(
 		"AWS_LAMBDA_FUNCTION_VERSION",
 		AWS_LAMBDA_FUNCTION_VERSION_DEFAULT,
 	)
-	timeout := env.GetenvInt(
+	timeout := util.GetenvInt(
 		"AWS_LAMBDA_FUNCTION_TIMEOUT",
 		AWS_LAMBDA_FUNCTION_TIMEOUT_DEFAULT,
 	)
-	idleTimeout := env.GetenvInt(
+	idleTimeout := util.GetenvInt(
 		"AWS_LAMBDA_FUNCTION_IDLETIMEOUT",
 		AWS_LAMBDA_FUNCTION_IDLETIMEOUT_DEFAULT,
 	)
-	memory := env.GetenvInt(
+	memory := util.GetenvInt(
 		"AWS_LAMBDA_FUNCTION_MEMORY_SIZE",
 		AWS_LAMBDA_FUNCTION_MEMORY_SIZE_DEFAULT,
 	)
-	maxConcurrency := env.GetenvInt("MAX_CONCURRENCY", defaultMaxConcurrency)
+	maxConcurrency := util.GetenvInt("MAX_CONCURRENCY", defaultMaxConcurrency)
 	report := strings.ToUpper(
-		env.Getenv("PRINT_REPORTS", defaultPrintReportsValue)) == "TRUE"
+		util.Getenv("PRINT_REPORTS", defaultPrintReportsValue)) == "TRUE"
 
 	config := &Config{
 		InvokeAPIServerURI:  invokeAPIHost + ":" + invokeAPIPort,
 		RuntimeAPIServerURI: runtimeAPIHost + ":" + runtimeAPIPort,
 		RPCServerURI:        rpcServerURI,
 		FunctionName:        name,
-		Version:             version,
+		Version:             functionVersion,
 		Timeout:             timeout,
 		IdleTimeout:         idleTimeout,
 		Memory:              memory,
@@ -137,7 +151,7 @@ func GetConfig() *Config {
 		if len(args) > 2 { // Assume last arg is the handler
 			config.Handler = args[len(args)-1]
 		} else { // Otherwise fall back to _HANDLER environment variable if set
-			config.Handler = env.Getenv("_HANDLER", "")
+			config.Handler = util.Getenv("_HANDLER", "")
 		}
 	} else { // If any of the candidate bootstrap files exist set Cmd to that
 		candidates := []string{"/var/task/bootstrap", "/opt/bootstrap",
@@ -154,6 +168,8 @@ func GetConfig() *Config {
 			config.Cmd = []string{"/var/task/bootstrap"}
 		}
 	}
+
+	log.Infof("Version: %s", version)
 
 	// Infer AWS_LAMBDA_FUNCTION_NAME from handler if not explicitly set.
 	if config.FunctionName == "" {

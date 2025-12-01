@@ -5,13 +5,28 @@ DESTINATION:= bin/
 
 all: format lint daemon server
 
+
+# Get the version out of config.json
+# Finds the line containing "version": "…"
+# Extracts the quoted value
+# Uses only sed regex — safe, portable, works on Linux & macOS
+VERSION := $(shell sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' config.json)
+$(info VERSION is $(VERSION))
+
 # Setting CGO_ENABLED=0 allows creation of a statically linked executable.
 # ldflags -s -w disables DWARF & symbol table generation to reduce binary size
+# ldflags -X Sets the string variable in the importpath named name to value
+# E.g. -ldflags "-X lambda-runtime-api-daemon/pkg/config/rapid.version=1.2.3"
+# will set the version variable in the rapid package to 1.2.3
+# See https://pkg.go.dev/cmd/link
+# This seems to be a fairly common approach for embedding version info in go
+# https://www.digitalocean.com/community/tutorials/using-ldflags-to-set-version-information-for-go-applications?utm_source=chatgpt.com
+# https://leapcell.io/blog/advanced-go-linker-usage-injecting-version-info-and-build-configurations?utm_source=chatgpt.com
 daemon: format
-	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -ldflags "-s -w" -o ${DESTINATION} ./cmd/lambda-runtime-api-daemon
+	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -ldflags "-s -w -X lambda-runtime-api-daemon/pkg/config/rapid.version=$(VERSION)" -o ${DESTINATION} ./cmd/lambda-runtime-api-daemon
 
 server: format
-	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -ldflags "-s -w" -o ${DESTINATION} ./cmd/lambda-server
+	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -ldflags "-s -w -X lambda-runtime-api-daemon/pkg/config/server.version=$(VERSION)" -o ${DESTINATION} ./cmd/lambda-server
 
 # Use Docker to build the daemon and server
 docker:
@@ -43,5 +58,5 @@ clean-dep:
 test:
 	go test -v ./...
 
-.PHONY: all clean clean-dep dep docker format lint
+.PHONY: all clean clean-dep dep docker format lint test
 

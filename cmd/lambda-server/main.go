@@ -35,15 +35,15 @@
 package main
 
 import (
-	"lambda-runtime-api-daemon/pkg/config/env"
 	"lambda-runtime-api-daemon/pkg/config/server"
+	"lambda-runtime-api-daemon/pkg/config/util"
 	"lambda-runtime-api-daemon/pkg/invokeapi"
 	"lambda-runtime-api-daemon/pkg/logging"
 	"lambda-runtime-api-daemon/pkg/process"
 )
 
 func main() {
-	logging.SetLogLevel(env.Getenv("LOG_LEVEL", "INFO"))
+	logging.SetLogLevel(util.Getenv("LOG_LEVEL", "INFO"))
 	cfg := server.GetConfig()
 
 	// ProcessManager manages signals.
