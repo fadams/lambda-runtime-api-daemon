@@ -21,7 +21,7 @@ package runtimeapi
 
 import (
 	"context"
-	log "github.com/sirupsen/logrus" // Structured logging
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
@@ -85,14 +85,14 @@ func NewRuntimeAPIServer(cfg *rapid.Config, pm *process.ProcessManager) *Runtime
 
 		if err := server.Shutdown(ctx); err != nil {
 			// Error from closing listeners, or context timeout:
-			log.Warnf("RuntimeAPI Shutdown: %v", err)
+			slog.Warn("RuntimeAPI Shutdown:", slog.Any("error", err))
 		}
 	}
 
 	go func() {
-		log.Infof("RuntimeAPI listening on %s", cfg.RuntimeAPIServerURI)
+		slog.Info("RuntimeAPI Listening:", slog.String("address", cfg.RuntimeAPIServerURI))
 		if err := server.ListenAndServe(); err != nil {
-			log.Infof("RuntimeAPI ListenAndServe %v", err)
+			slog.Info("RuntimeAPI ListenAndServe:", slog.Any("error", err))
 			if err == http.ErrServerClosed {
 				// ErrServerClosed is caused by Shutdown so wait for other
 				// goroutines to cleanly exit.

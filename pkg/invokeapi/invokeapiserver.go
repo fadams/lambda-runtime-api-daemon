@@ -21,8 +21,8 @@ package invokeapi
 
 import (
 	"context"
-	log "github.com/sirupsen/logrus" // Structured logging
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
@@ -81,7 +81,10 @@ func NewInvokeAPIServer(uri string, invoker Invoker) *InvokeAPIServer {
 		if r.Body != nil {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				log.Errorf("InvokeAPI failed to read invoke body: %s", err)
+				slog.Error(
+					"InvokeAPI Failed to Read Invoke Body:",
+					slog.Any("error", err),
+				)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
@@ -106,7 +109,7 @@ func NewInvokeAPIServer(uri string, invoker Invoker) *InvokeAPIServer {
 
 	// Optional OpenFaaS routes.
 	if strings.ToUpper(os.Getenv("ENABLE_OPENFAAS")) == "TRUE" {
-		log.Info("InvokeAPI enabling OpenFaaS routes")
+		slog.Info("InvokeAPI Enabling OpenFaaS Routes")
 		invokeRouter.Post("/", invocations)
 		invokeRouter.Get("/_/health", openFaaSHealth)
 		invokeRouter.Get("/_/ready", openFaaSHealth)
@@ -125,14 +128,14 @@ func NewInvokeAPIServer(uri string, invoker Invoker) *InvokeAPIServer {
 
 		if err := invokeServer.Shutdown(ctx); err != nil {
 			// Error from closing listeners, or context timeout:
-			log.Warnf("InvokeAPI Shutdown: %v", err)
+			slog.Warn("InvokeAPI Shutdown:", slog.Any("error", err))
 		}
 	}
 
 	go func() {
-		log.Infof("InvokeAPI listening on %s", uri)
+		slog.Info("InvokeAPI Listening:", slog.String("address", uri))
 		if err := invokeServer.ListenAndServe(); err != nil {
-			log.Infof("InvokeAPI ListenAndServe %v", err)
+			slog.Info("InvokeAPI ListenAndServe:", slog.Any("error", err))
 			if err == http.ErrServerClosed {
 				// ErrServerClosed is caused by Shutdown so wait for other
 				// goroutines to cleanly exit.

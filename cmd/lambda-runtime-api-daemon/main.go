@@ -79,7 +79,8 @@ func main() {
 		return
 	}
 
-	logging.SetLogLevel(util.Getenv("LOG_LEVEL", "INFO"))
+	logging.InitialiseLogging(util.Getenv("LOG_LEVEL", "INFO"))
+	defer logging.Sync() // Flush log buffers on exit
 	cfg := rapid.GetConfig()
 
 	// ProcessManager manages spawning and reaping Lambda/Extension processes.

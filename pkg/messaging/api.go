@@ -36,7 +36,8 @@ package messaging
 import (
 	"context"
 	"errors"
-	log "github.com/sirupsen/logrus" // Structured logging
+	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -250,7 +251,7 @@ type Consumer interface {
 func NewConnection(uri string, opts ...func(*connectionOpts)) (Connection, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		log.Errorf("url.Parse() error: %s", err)
+		slog.Error("url.Parse()", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -261,7 +262,8 @@ func NewConnection(uri string, opts ...func(*connectionOpts)) (Connection, error
 	}
 
 	// Wait until after url.Parse() as we want to log the *redacted* URI.
-	log.Infof("Creating %s with url: %s", c.name, u.Redacted())
+	message := fmt.Sprintf("Creating %s:", c.name)
+	slog.Info(message, slog.String("url", u.Redacted()))
 
 	scheme := u.Scheme
 	if strings.Contains(scheme, "amqp") { // TODO support other protocols

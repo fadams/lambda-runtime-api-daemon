@@ -104,6 +104,8 @@ The primary means of configuring the Lambda Runtime API Daemon and Lambda Server
 #### Lambda Runtime API Daemon
 Currently supported environment variables specific to the Lambda Runtime API Daemon are:
 
+* KUBERNETES_INIT_CONTAINER: If set the Runtime API Daemon copies itself, e.g the lambda-runtime-api-daemon executable, to /tmp and then exits. This allows the executable to be written to a volume and subsequently ["injected" into the Lambda Container](https://github.com/fadams/lambda-runtime-api-daemon/tree/main/examples/kubernetes/kind-lambda#injecting-runtime-api-daemon-into-the-lambda-container). The default is unset.
+* USE_STRUCTURED_LOGGING: If set logs are output in structured JSON format, if unset logs are output in plain human readable format, default is unset.
 * LOG_LEVEL: The log level (PANIC FATAL ERROR WARNING INFO DEBUG TRACE). The level is case insensitive and the default value is INFO.
 * PRINT_REPORTS: Print start and end duration and billed duration reports. Value is case insensitive TRUE or FALSE and the default value is FALSE.
 * INVOKE_API_HOST: The Invoke API address, default is 0.0.0.0.
@@ -130,6 +132,7 @@ The Lambda Runtime API Daemon also supports a number of Lambda environment varia
 #### Lambda Server
 Currently supported environment variables specific to the Lambda Server are:
 
+* USE_STRUCTURED_LOGGING: If set logs are output in structured JSON format, if unset logs are output in plain human readable format, default is unset.
 * LOG_LEVEL: The log level (PANIC FATAL ERROR WARNING INFO DEBUG TRACE). The level is case insensitive and the default value is INFO.
 * INVOKE_API_HOST: The Invoke API address, default is 0.0.0.0.
 * PORT: The Invoke API listen port, default is 8080.

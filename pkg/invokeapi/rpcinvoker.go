@@ -23,7 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus" // Structured logging
+	"log/slog"
 	"os"
 	"runtime"
 	"sync"
@@ -65,7 +65,10 @@ func NewRPCInvoker(cfg *server.Config) *RPCInvoker {
 
 		exitOnError := func(err error, msg string) {
 			if err != nil {
-				log.Infof("%s: %s", msg, err)
+				slog.Info(
+					"Exiting:",
+					slog.String("message", msg), slog.Any("error", err),
+				)
 				// Use runtime.Goexit() https://pkg.go.dev/runtime#Goexit with
 				// defer os.Exit(1) is an idiom that allows us to exit but
 				// still run all the other defers, so is cleaner than just
@@ -136,7 +139,9 @@ func NewRPCInvoker(cfg *server.Config) *RPCInvoker {
 				responses <- message.Body
 			} else {
 				invoker.Unlock() // Need explicit Unlock here.
-				log.Debugf("RPCInvoker Request: %v has no matching requestor", cid)
+				slog.Debug(
+					"RPCInvoker No Matching Requestor:", slog.String("cid", cid),
+				)
 			}
 		}
 
@@ -162,8 +167,8 @@ func NewRPCInvoker(cfg *server.Config) *RPCInvoker {
 				// been deployed, as its request queue won't exist.
 				// Replace Message Body with an error message and reuse
 				// the rpcResponseHandler.
-				message := fmt.Sprintf("%s is unreachable", m.Subject)
-				log.Warn(message)
+				message := fmt.Sprintf("%s is Unreachable", m.Subject)
+				slog.Warn(message)
 				m.Body = []byte(`{"errorType": "ResourceNotFoundException",` +
 					` "errorMessage": "` + message + `"}`)
 				go rpcResponseHandler(m)
@@ -180,7 +185,7 @@ func NewRPCInvoker(cfg *server.Config) *RPCInvoker {
 			}
 		}
 
-		log.Info("RPCInvoker stopped")
+		slog.Info("RPCInvoker Stopped")
 	}()
 
 	return invoker
@@ -304,7 +309,7 @@ func (invoker *RPCInvoker) invoke(
 			// The timeoutMessage and timeoutResponse utility functions are
 			// actually defined in rapiinvoker.go
 			message := timeoutMessage(cid, float64(invoker.timeout))
-			log.Info(message)
+			slog.Info(message)
 			response = timeoutResponse(message)
 		}
 	}

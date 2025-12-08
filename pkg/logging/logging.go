@@ -17,60 +17,81 @@
 // under the License.
 //
 
+// The approach taken for structured logging is to move to the standard library
+// log/slog using its API for logging in the main body of the code base.
+// In this package we initialise logging by creating custom slog Handlers
+// https://pkg.go.dev/log/slog#Handler to provide different logging "back ends"
+// for both structured logging (via go.uber.org/zap) and plain human readable
+// logs that are as similar as possible to the original logrus logging style.
+
 package logging
 
 import (
-	"bytes"
-	"fmt"
-	log "github.com/sirupsen/logrus" // Structured logging
+	"lambda-runtime-api-daemon/pkg/config/util"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
-// TODO find better place for this declaration
-const (
-	// AWS Error response uses RFC3339 timestamps will millisecond precision
-	// but https://pkg.go.dev/time#pkg-constants only has RFC3339 & RFC3339Nano
-	RFC3339Milli = "2006-01-02T15:04:05.999Z07"
-)
+// parseLevel converts a string like "debug", "info", "warn", "error"
+// (or a numeric level like "-4") into a slog.Level.
+// Returns slog.LevelInfo on error.
+func parseLevel(s string) slog.Level {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(strings.ToLower(s))); err != nil {
+		return slog.LevelInfo
+	}
+	return level
+}
 
 // SetLogLevel sets the log level for internal logging. Needs to be called very
 // early during startup to configure logs emitted during initialization
-func SetLogLevel(logLevel string) {
-	if level, err := log.ParseLevel(logLevel); err == nil {
-		log.SetLevel(level)
-		log.SetFormatter(&InternalFormatter{})
+func InitialiseLogging(logLevel string) {
+	// Normalise logLevel string and default it to info if not set.
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	logLevel = strings.ToLower(logLevel)
+
+	programLevel := new(slog.LevelVar)     // Info by default
+	programLevel.Set(parseLevel(logLevel)) // Parse slog logLevel string
+
+	// Set the default logger logging level.
+	slog.SetLogLoggerLevel(programLevel.Level())
+
+	// Infer the application name to add to logger label Attr
+	appname := "rapid" // Default, abbreviation for lambda-runtime-api-daemon
+	if filepath.Base(os.Args[0]) == "lambda-server" {
+		appname = "lambda-server"
+	}
+
+	// This "label" will be added as an Attr to the loggers
+	label := slog.String("app", appname)
+
+	// If USE_STRUCTURED_LOGGING env var is set enable structured logging by
+	// configuring slog with a go.uber.org/zap back end via a custom Handler.
+	// util.Getenv returns fallback if env var is not set
+	if strings.ToLower(
+		util.Getenv("USE_STRUCTURED_LOGGING", "false"),
+	) == "false" {
+		// Set slog Default logger to Human Readable Handler
+		handler := NewSlogPlainHandler(os.Stderr, programLevel.Level())
+		slog.SetDefault(slog.New(handler).With(label))
 	} else {
-		log.WithError(err).Fatal("Failed to set log level. Valid log levels are:",
-			log.AllLevels)
+		// Set slog Default logger to Structured Logging using go.uber.org/zap
+		handler := NewSlogZapHandler(os.Stderr, programLevel.Level())
+		slog.SetDefault(slog.New(handler).With(label))
 	}
 }
 
-type InternalFormatter struct{}
-
-// format RAPID's log
-func (f *InternalFormatter) Format(entry *log.Entry) ([]byte, error) {
-	b := &bytes.Buffer{}
-
-	// time with comma separator for fraction of second
-	time := entry.Time.Format(RFC3339Milli)
-
-	fmt.Fprint(b, time)
-
-	// level
-	level := strings.ToUpper(entry.Level.String())
-	fmt.Fprintf(b, " [%s]", level)
-
-	// label
-	fmt.Fprint(b, " (rapid)")
-
-	// message
-	fmt.Fprintf(b, " %s", entry.Message)
-
-	// from WithField and WithError
-	for field, value := range entry.Data {
-		fmt.Fprintf(b, " %s=%s", field, value)
+// Provides a mechanism to call logger.Sync() on the zap.Logger normally
+// via defer logging.Sync() in main(). We first get the Handler from the
+// Default slog Logger that we've set in SetLogLevel() that may or may not
+// be a SlogZapHandler so we do a type assertion to check.
+func Sync() {
+	handler := slog.Default().Handler()
+	if zapHandler, ok := handler.(*SlogZapHandler); ok {
+		_ = zapHandler.Logger.Sync()
 	}
-
-	fmt.Fprintf(b, "\n")
-	return b.Bytes(), nil
 }

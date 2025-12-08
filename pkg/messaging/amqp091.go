@@ -38,7 +38,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus" // Structured logging
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,9 +102,11 @@ func (conn *connectionAMQP091) reconnect() error {
 		var newconn *amqp.Connection
 		for i := 0; i < conn.connectionAttempts; i++ {
 			if i == 0 {
-				log.Infof("Opening %s", conn.name)
+				slog.Info("AMQP Connection Opening:", slog.String("name", conn.name))
 			} else {
-				log.Infof("Opening %s retry %d", conn.name, i)
+				slog.Info("AMQP Connection Opening:",
+					slog.String("name", conn.name), slog.Int("retry", i),
+				)
 			}
 
 			// https://pkg.go.dev/github.com/rabbitmq/amqp091-go#DialConfig
@@ -127,17 +129,19 @@ func (conn *connectionAMQP091) reconnect() error {
 
 		// Close the current connection (if any) and set to new one
 		if conn.connections != nil {
-			log.Info("Closing stale Connection")
+			slog.Info("Closing Stale Connection")
 		}
 		conn.Close()
 		conn.connections = []*amqp.Connection{newconn}
 
 		if conn.err == nil {
-			log.Infof("%s established", conn.name)
+			slog.Info("AMQP Connection Established:", slog.String("name", conn.name))
 		} else {
 			// If all connectionAttempts have been tried and we still haven't
 			// connected then notify.
-			log.Infof("%s failed with %s", conn.name, conn.err)
+			slog.Info("Failed:",
+				slog.String("name", conn.name), slog.Any("error", conn.err),
+			)
 			for _, c := range conn.closeListeners {
 				c <- conn.err
 				close(c)
@@ -153,7 +157,7 @@ func (conn *connectionAMQP091) reconnect() error {
 // reconnection event occurs.
 func (conn *connectionAMQP091) createPool(size int) {
 	if size > 1 {
-		log.Infof("Creating Connection Pool with %d Connections", size)
+		slog.Info("Creating AMQP Connection Pool:", slog.Int("size", size))
 
 		// The reconnect() call creates connections[0], the primary/main
 		// connection in the pool, and we use that as a "sentinel" to determine
@@ -172,7 +176,10 @@ func (conn *connectionAMQP091) createPool(size int) {
 			if err == nil {
 				conn.connections = append(conn.connections, c)
 			} else {
-				log.Errorf("Error %s Creating Connection pool Connection instance: %d", err, i)
+				slog.Error(
+					"AMQP Connection Pool Creation Error:",
+					slog.Int("instance", i), slog.Any("error", err),
+				)
 			}
 		}
 	}
@@ -215,7 +222,7 @@ func (conn *connectionAMQP091) Close() {
 		}
 	}
 	if conn.connections != nil {
-		log.Infof("%s closed", conn.name)
+		slog.Info("AMQP Connection Closed:", slog.String("name", conn.name))
 	}
 	conn.connections = nil // Reset connections slice
 }
@@ -308,7 +315,10 @@ func (sess *sessionAMQP091) reconnect() error {
 		// When attempting to reconnect a session we first ensure that the
 		// underlying connection has been established.
 		if sess.connection.IsClosed() {
-			log.Infof("Opening %s with closed Connection, reconnecting...", sess.name)
+			slog.Info(
+				"AMQP Session Opening with closed Connection, reconnecting...:",
+				slog.String("name", sess.name),
+			)
 			err := sess.connection.reconnect()
 			if err != nil {
 				// Set closed to prevent reconnection when reconnect() errors.
@@ -316,7 +326,7 @@ func (sess *sessionAMQP091) reconnect() error {
 				return err
 			}
 		} else {
-			log.Infof("Opening %s", sess.name)
+			slog.Info("AMQP Session Opening:", slog.String("name", sess.name))
 		}
 
 		// https://pkg.go.dev/github.com/rabbitmq/amqp091-go#Connection.Channel
@@ -346,7 +356,7 @@ func (sess *sessionAMQP091) createPool(size int) {
 		// First ensure that connection pool is in place.
 		sess.connection.createPool(size)
 
-		log.Infof("Creating Session Pool with %d Channels", size)
+		slog.Info("Creating AMQP Session Pool:", slog.Int("size", size))
 
 		// The reconnect() call creates channels[0], the primary/main channel
 		// in the pool, and we use that as a "sentinel" to determine if channels
@@ -361,7 +371,10 @@ func (sess *sessionAMQP091) createPool(size int) {
 			if err == nil {
 				sess.channels = append(sess.channels, ch)
 			} else {
-				log.Errorf("Error %s Creating Session pool Channel instance: %d", err, i)
+				slog.Error(
+					"AMQP Session Pool Creation Error:",
+					slog.Int("instance", i), slog.Any("error", err),
+				)
 			}
 		}
 	}
@@ -370,14 +383,18 @@ func (sess *sessionAMQP091) createPool(size int) {
 // Blocks awaiting notification that the Session has reconnected.
 func (sess *sessionAMQP091) Wait() {
 	for sess.IsClosed() && atomic.LoadInt32(&sess.closed) == 0 {
-		log.Debugf("Waiting for %s to reconnect", sess.name)
+		slog.Debug(
+			"Waiting for Session to reconnect:", slog.String("name", sess.name),
+		)
 
 		// Wait for reconnect notification.
 		b := <-sess.barriers // Acquire barrier from barrier store.
 		sess.barriers <- b   // Release barrier.
 		<-b                  // Wait on barrier.
 
-		log.Debugf("%s has successfully reconnected", sess.name)
+		slog.Debug(
+			"Session has successfully reconnected", slog.String("name", sess.name),
+		)
 	}
 }
 
@@ -392,9 +409,12 @@ func (sess *sessionAMQP091) closeListener() {
 	// Prevent reconnection when Close() is explicitly called.
 	if atomic.LoadInt32(&sess.closed) == 0 {
 		if err == nil {
-			log.Infof("%s closed", sess.name)
+			slog.Info("AMQP Session Closed:", slog.String("name", sess.name))
 		} else {
-			log.Infof("%s closed with %s", sess.name, err)
+			slog.Info(
+				"AMQP Session Closed:",
+				slog.String("name", sess.name), slog.Any("error", err),
+			)
 		}
 
 		sess.reconnect() // Will block until Connection and Session are connected.
@@ -475,7 +495,7 @@ func (sess *sessionAMQP091) Close() {
 		}
 	}
 	if sess.channels != nil {
-		log.Infof("%s closed", sess.name)
+		slog.Info("AMQP Session Closed:", slog.String("name", sess.name))
 	}
 	sess.channels = nil // Reset channels slice
 }
@@ -724,7 +744,10 @@ func (dst *destinationAMQP091) parseAddress(address string) error {
 		// The err type being returned is *json.SyntaxError. It might be
 		// possible to use err.Offset to create a more useful error message
 		// fmt.Println((err.(*json.SyntaxError)).Offset)
-		log.Errorf("json.Unmarshal error: %s from unmarshalling: %s", err, optionsString)
+		slog.Error(
+			"json.Unmarshal Failed:",
+			slog.Any("error", err), slog.String("options", optionsString),
+		)
 		return err
 	}
 
@@ -834,19 +857,19 @@ func (prod *producerAMQP091) start() {
 	if prod.queue == nil && prod.poolSize > 1 {
 		// Create a queue/buffer used to multiplex Messages from the Send()
 		// method across the available pool of AMQP Channels thence Connections.
-		log.Infof("Creating Producer pool queue of size %d", prod.bufSize)
+		slog.Info("Creating Producer Pool Queue:", slog.Int("size", prod.bufSize))
 		prod.queue = make(chan *Message, prod.bufSize)
 	}
 
 	for i := 0; i < prod.poolSize; i++ {
 		i := i
 		go func() {
-			logmsg := "Producer dispatcher"
+			logmsg := "Producer Dispatcher"
 			if prod.poolSize > 1 {
-				logmsg = fmt.Sprintf("Producer pool dispatcher %d", i)
+				logmsg = fmt.Sprintf("Producer Pool Dispatcher %d", i)
 			}
 
-			log.Infof("Starting %s", logmsg)
+			slog.Info("Starting " + logmsg)
 
 			// Use buffer to ensure close event is sent even if receiver is blocked.
 			// https://pkg.go.dev/github.com/rabbitmq/amqp091-go#Channel.NotifyClose
@@ -874,9 +897,9 @@ func (prod *producerAMQP091) start() {
 			}
 
 			if err == nil {
-				log.Infof("Stopping %s", logmsg)
+				slog.Info("Stopping " + logmsg)
 			} else {
-				log.Infof("Stopping %s with %s", logmsg, err)
+				slog.Info("Stopping "+logmsg+":", slog.Any("error", err))
 			}
 		}()
 	}
@@ -902,7 +925,7 @@ func (prod *producerAMQP091) startReceivers() {
 		wg.Add(1)
 		i := i
 		go func() {
-			log.Infof("Starting Producer Returns dispatcher %d", i)
+			slog.Info("Starting Producer Returns Dispatcher:", slog.Int("instance", i))
 			// Use buffer to ensure close event is sent even if receiver is blocked.
 			// https://pkg.go.dev/github.com/rabbitmq/amqp091-go#Channel.NotifyClose
 			cl := prod.session.channels[i].NotifyClose(make(chan *amqp.Error, 1))
@@ -966,9 +989,16 @@ func (prod *producerAMQP091) startReceivers() {
 			}
 
 			if err == nil {
-				log.Infof("Stopping Producer Returns dispatcher %d", i)
+				slog.Info(
+					"Stopping Producer Returns Dispatcher",
+					slog.Int("instance", i),
+				)
 			} else {
-				log.Infof("Stopping Producer Returns dispatcher %d with %s", i, err)
+				slog.Info(
+					"Stopping Producer Returns Dispatcher",
+					slog.Int("instance", i),
+					slog.Any("error", err),
+				)
 			}
 		}()
 	}
@@ -986,9 +1016,9 @@ func (prod *producerAMQP091) startReceivers() {
 // represented by the address string schema.
 func (prod *producerAMQP091) open() error {
 	if prod.address == "" {
-		log.Info("Creating Producer")
+		slog.Info("Creating Producer")
 	} else {
-		log.Infof("Creating Producer with address: %s", prod.address)
+		slog.Info("Creating Producer:", slog.String("address", prod.address))
 	}
 
 	prod.session.createPool(prod.poolSize)
@@ -1203,7 +1233,7 @@ func (prod *producerAMQP091) Return(opts ...func(*pool)) <-chan Message {
 			p.bufSize = prod.poolSize * 5000
 		}
 
-		log.Infof("Creating Return queue of size %d", p.bufSize)
+		slog.Info("Creating Return Queue:", slog.Int("size", p.bufSize))
 		prod.returns = make(chan Message, p.bufSize)
 		prod.startReceivers()
 	}
@@ -1264,12 +1294,12 @@ func (cons *consumerAMQP091) start() {
 		wg.Add(1)
 		i := i
 		go func() {
-			logmsg := "Consumer dispatcher"
+			logmsg := "Consumer Dispatcher"
 			if cons.poolSize > 1 {
-				logmsg = fmt.Sprintf("Consumer pool dispatcher %d", i)
+				logmsg = fmt.Sprintf("Consumer Pool Dispatcher %d", i)
 			}
 
-			log.Infof("Starting %s", logmsg)
+			slog.Info("Starting " + logmsg)
 
 			// Use buffer to ensure close event is sent even if receiver is blocked.
 			// https://pkg.go.dev/github.com/rabbitmq/amqp091-go#Channel.NotifyClose
@@ -1292,15 +1322,15 @@ func (cons *consumerAMQP091) start() {
 			for {
 				select {
 				case <-cons.session.connection.ctx.Done(): // Receive cancel event
-					log.Infof("Cancelling %s", logmsg)
+					slog.Info("Cancelling " + logmsg)
 					// Prevent reopening the Consumer if cancelled.
 					atomic.StoreInt32(&cons.session.closed, 1)
 					break loop
 				case err := <-cl: // Receive channel close event
 					if err == nil {
-						log.Infof("Stopping %s", logmsg)
+						slog.Info("Stopping " + logmsg)
 					} else {
-						log.Infof("Stopping %s with %s", logmsg, err)
+						slog.Info("Stopping "+logmsg+":", slog.Any("error", err))
 					}
 					cons.closed = true
 					break loop
@@ -1348,9 +1378,9 @@ func (cons *consumerAMQP091) start() {
 						// Send Message to cons.queue channel
 					case err := <-cl:
 						if err == nil {
-							log.Infof("Stopping %s", logmsg)
+							slog.Info("Stopping " + logmsg)
 						} else {
-							log.Infof("Stopping %s with %s", logmsg, err)
+							slog.Info("Stopping "+logmsg+":", slog.Any("error", err))
 						}
 						cons.closed = true
 						break loop
@@ -1388,7 +1418,7 @@ func (cons *consumerAMQP091) start() {
 // AMQP exchange_declare, queue_declare, etc. where those details are instead
 // represented by the address string schema.
 func (cons *consumerAMQP091) open() error {
-	log.Infof("Creating Consumer with address: %s", cons.address)
+	slog.Info("Creating Consumer:", slog.String("address", cons.address))
 
 	cons.session.createPool(cons.poolSize)
 	err := cons.parseAddress(cons.address)
@@ -1552,7 +1582,7 @@ func (cons *consumerAMQP091) SetCapacity(capacity int) error {
 			false,         // global
 		)
 		if err != nil {
-			log.Errorf("SetCapacity error: %s when setting Qos", err)
+			slog.Error("SetCapacity Failed to Set Qos", slog.Any("error", err))
 			return err
 		}
 	}

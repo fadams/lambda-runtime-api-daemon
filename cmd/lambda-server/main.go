@@ -43,7 +43,8 @@ import (
 )
 
 func main() {
-	logging.SetLogLevel(util.Getenv("LOG_LEVEL", "INFO"))
+	logging.InitialiseLogging(util.Getenv("LOG_LEVEL", "INFO"))
+	defer logging.Sync() // Flush log buffers on exit
 	cfg := server.GetConfig()
 
 	// ProcessManager manages signals.

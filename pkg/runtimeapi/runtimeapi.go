@@ -22,8 +22,8 @@ package runtimeapi
 import (
 	"context"
 	//"fmt"
-	log "github.com/sirupsen/logrus" // Structured logging
 	"io"
+	"log/slog"
 	"net/http"
 	"path"
 	"strconv"
@@ -162,7 +162,7 @@ func (rapi *RuntimeAPI) next(w http.ResponseWriter, r *http.Request) {
 			//     0 ms – A function with no registered extensions
 			//     500 ms – A function with a registered internal extension
 			//     2,000 ms – A function with one or more registered external extensions
-			log.Infof("Terminating idle Lambda Runtime: pgid %d", pgid)
+			slog.Info("Terminating Idle Lambda Runtime:", slog.Int("pgid", pgid))
 			if len(rapi.extensions.Paths()) > 0 { // Registered External Extensions
 				time.Sleep(1700 * time.Millisecond)
 				syscall.Kill(-pgid, syscall.SIGTERM)
@@ -179,7 +179,7 @@ func (rapi *RuntimeAPI) next(w http.ResponseWriter, r *http.Request) {
 			// If no Extensions are registered Lambda ends Runtime with SIGKILL.
 			if pid := rapi.pm.FindPidFromAddress(r.RemoteAddr); pid > 0 {
 				if pgid, err := syscall.Getpgid(pid); err == nil {
-					log.Infof("Terminating idle Lambda Runtime: pgid %d", pgid)
+					slog.Info("Terminating Idle Lambda Runtime:", slog.Int("pgid", pgid))
 					syscall.Kill(-pgid, syscall.SIGKILL)
 				}
 			}
@@ -319,8 +319,10 @@ func (rapi *RuntimeAPI) response(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		rapi.Unlock() // Need explicit Unlock here.
-		log.Debugf("RuntimeAPI %s RequestURI: %v has no matching requestor",
-			apiMethod, r.RequestURI)
+		slog.Debug(
+			"RuntimeAPI No Matching Requestor For:",
+			slog.String("method", apiMethod), slog.String("uri", r.RequestURI),
+		)
 	}
 }
 

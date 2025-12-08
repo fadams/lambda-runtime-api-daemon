@@ -21,9 +21,8 @@ package invokeapi
 
 import (
 	"context"
-	//"fmt"
-	log "github.com/sirupsen/logrus" // Structured logging
 	"lambda-runtime-api-daemon/pkg/messaging"
+	"log/slog"
 	"os"
 	"runtime"
 )
@@ -34,7 +33,7 @@ func NewRPCServer(uri string, name string, concurrency int, invoker Invoker) *In
 	}
 
 	if uri == "" {
-		log.Warn("No broker Connection URI is set, RPCServer has been disabled")
+		slog.Warn("No Broker Connection URI Set, RPCServer Has Been Disabled")
 		return srv
 	}
 
@@ -52,7 +51,10 @@ func NewRPCServer(uri string, name string, concurrency int, invoker Invoker) *In
 
 		exitOnError := func(err error, msg string) {
 			if err != nil {
-				log.Infof("%s: %s", msg, err)
+				slog.Info(
+					"Exiting:",
+					slog.String("message", msg), slog.Any("error", err),
+				)
 				// Use runtime.Goexit() https://pkg.go.dev/runtime#Goexit with
 				// defer os.Exit(1) is an idiom that allows us to exit but
 				// still run all the other defers, so is cleaner than just
@@ -75,17 +77,17 @@ func NewRPCServer(uri string, name string, concurrency int, invoker Invoker) *In
 		cConnection, err := messaging.NewConnection(
 			uri,
 			messaging.Context(ctx),
-			messaging.ConnectionName("RPC consumer Connection"),
+			messaging.ConnectionName("RPC Consumer Connection"),
 		)
-		exitOnError(err, "RPC consumer Connection failed to connect to AMQP broker")
+		exitOnError(err, "RPC Consumer Connection failed to connect to AMQP broker")
 		defer cConnection.Close()
 
 		pConnection, err := messaging.NewConnection(
 			uri,
 			messaging.Context(ctx),
-			messaging.ConnectionName("RPC producer Connection"),
+			messaging.ConnectionName("RPC Producer Connection"),
 		)
-		exitOnError(err, "RPC producer Connection failed to connect to AMQP broker")
+		exitOnError(err, "RPC Producer Connection failed to connect to AMQP broker")
 		defer pConnection.Close()
 
 		// It's important to *not* use messaging.AutoAck on the consumer
@@ -182,17 +184,17 @@ func NewRPCServer(uri string, name string, concurrency int, invoker Invoker) *In
 			// Listen on the CloseNotify channels and exit on error if broker
 			// connection fails and the maximum Connection Attempts is exceeded.
 			case err := <-pCloseNotify:
-				exitOnError(err, "RPC consumer Connection to AMQP broker was "+
+				exitOnError(err, "RPC Consumer Connection to AMQP broker was "+
 					"closed and maximum Connection Attempts exceeded")
 			case err := <-cCloseNotify:
-				exitOnError(err, "RPC producer Connection to AMQP broker was "+
+				exitOnError(err, "RPC Producer Connection to AMQP broker was "+
 					"closed and maximum Connection Attempts exceeded")
 			case <-ctx.Done(): // Exit main loop when cancel function is called.
 				break loop
 			}
 		}
 
-		log.Info("RPCServer stopped")
+		slog.Info("RPCServer Stopped")
 	}()
 
 	return srv

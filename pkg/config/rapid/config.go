@@ -20,7 +20,7 @@
 package rapid
 
 import (
-	log "github.com/sirupsen/logrus" // Structured logging
+	"log/slog"
 	"os"
 	"strings"
 
@@ -169,23 +169,26 @@ func GetConfig() *Config {
 		}
 	}
 
-	log.Infof("Version: %s", version)
+	slog.Info("Version:", slog.String("version", version))
 
 	// Infer AWS_LAMBDA_FUNCTION_NAME from handler if not explicitly set.
 	if config.FunctionName == "" {
 		if config.Handler == "" {
-			log.Warn("Neither AWS_LAMBDA_FUNCTION_NAME nor a handler are " +
+			slog.Warn("Neither AWS_LAMBDA_FUNCTION_NAME nor a handler are " +
 				"set, unable to infer FunctionName")
 		} else {
 			config.FunctionName = strings.Split(config.Handler, ".")[0]
-			log.Warnf("AWS_LAMBDA_FUNCTION_NAME is not set, setting "+
-				"FunctionName to %s inferred from handler %s",
-				config.FunctionName, config.Handler)
+			slog.Warn(
+				"AWS_LAMBDA_FUNCTION_NAME is not set; "+
+					"inferring function name from handler:",
+				slog.String("FunctionName", config.FunctionName),
+				slog.String("handler", config.Handler),
+			)
 		}
 	}
-	log.Infof("FunctionName: %s", config.FunctionName)
-	log.Infof("AWS_LAMBDA_FUNCTION_TIMEOUT: %d", config.Timeout)
-	log.Infof("MAX_CONCURRENCY: %d", config.MaxConcurrency)
+	slog.Info("FunctionName:", slog.String("name", config.FunctionName))
+	slog.Info("AWS_LAMBDA_FUNCTION_TIMEOUT:", slog.Int("timeout", config.Timeout))
+	slog.Info("MAX_CONCURRENCY:", slog.Int("concurrency", config.MaxConcurrency))
 
 	// These are forwarded environment variables, set as the Lambda is exec'ed.
 

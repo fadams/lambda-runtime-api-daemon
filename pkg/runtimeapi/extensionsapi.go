@@ -24,8 +24,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus" // Structured logging
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -176,7 +176,7 @@ func NewExtensionsAPI(cfg *rapid.Config) *ExtensionsAPI {
 	// Check if Extensions are disabled and if not enumerate the Extension paths.
 	if _, err := os.Stat(extensionsDisableFile); err == nil {
 		eapi.enabled = false
-		log.Infof("Extensions disabled by file %s", extensionsDisableFile)
+		slog.Info("Extensions disabled:", slog.String("file", extensionsDisableFile))
 	} else {
 		eapi.enabled = true
 		// Get External Extension paths (Extensions must reside in /opt/extensions)
@@ -193,7 +193,7 @@ func NewExtensionsAPI(cfg *rapid.Config) *ExtensionsAPI {
 		}
 
 		if len(paths) > 0 {
-			log.Infof("External Extensions available: %v", paths)
+			slog.Info("External Extensions available:", slog.Any("paths", paths))
 			eapi.extensionPaths = paths
 		}
 	}
@@ -361,10 +361,10 @@ func (eapi *ExtensionsAPI) MapRemoteAddrToExtensions(conn net.Conn, state http.C
 
 	switch {
 	case state == http.StateNew:
-		//log.Info("----- MapRemoteAddrToExtensions -----")
-		//log.Info(state)
+		//slog.Info("----- MapRemoteAddrToExtensions -----")
+		//slog.Info(state)
 		address := conn.RemoteAddr().String()
-		//log.Info(address)
+		//slog.Info(address)
 		inode := process.FindTCPInodeFromAddress(address)
 
 		// Get a slice of candidate pids from /proc, applying a filter to
@@ -382,8 +382,8 @@ func (eapi *ExtensionsAPI) MapRemoteAddrToExtensions(conn net.Conn, state http.C
 		// Having found the pid of the remote address we get its process group
 		// ID and use that to find the required slice of Extension handles.
 		if pgid, err := syscall.Getpgid(pid); err == nil {
-			//log.Infof("-------- MATCHING PID: %d", pid)
-			//log.Infof("-------- PGID: %d", pgid)
+			//slog.Info("-------- MATCHING PID:", slog.Int("pid", pid))
+			//slog.Info("-------- PGID:", slog.Int("pgid", pgid))
 			eapi.extensionsByAddr[address] = Extensions{
 				eapi.extensions[pgid], pid, pgid,
 			}
@@ -424,7 +424,7 @@ func (eapi *ExtensionsAPI) register(w http.ResponseWriter, r *http.Request) {
 	// Lambda-Extension-Name should be the full file name of the extension.
 	extensionName := headers.Get("Lambda-Extension-Name")
 	if extensionName == "" { // Send error response to Extension
-		log.Warn("ExtensionsAPI empty extension name")
+		slog.Warn("ExtensionsAPI empty extension name")
 		w.WriteHeader(http.StatusForbidden)
 		w.Write(errMsg("Extension.InvalidExtensionName", "Empty extension name"))
 		return
@@ -453,7 +453,10 @@ func (eapi *ExtensionsAPI) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		log.Warnf("ExtensionsAPI failed to parse register body: %s", err)
+		slog.Warn(
+			"ExtensionsAPI failed to parse register request body:",
+			slog.Any("error", err),
+		)
 		w.WriteHeader(http.StatusForbidden)
 		w.Write(errMsg("InvalidRequestFormat", err.Error()))
 		return
@@ -471,16 +474,20 @@ func (eapi *ExtensionsAPI) register(w http.ResponseWriter, r *http.Request) {
 		} else {
 			errorType := "Extension.RegistrationServiceOff"
 			errorMessage := fmt.Sprintf(
-				"Failed to register Internal Extension %s", extensionName)
-			log.Warnf("%s: %s", errorMessage, errorType)
+				"ExtensionsAPI failed to register Internal Extension %s:", extensionName)
+			slog.Warn(errorMessage, slog.String("type", errorType))
 			w.WriteHeader(http.StatusForbidden)
 			w.Write(errMsg(errorType, errorMessage))
 			return
 		}
 	} else if extension.registered {
 		errorType := "Extension.AlreadyRegistered"
-		errorMessage := fmt.Sprintf("Failed to register %s", extensionName)
-		log.Warnf("%s (%s): %s", errorMessage, extension.id, errorType)
+		errorMessage := fmt.Sprintf("ExtensionsAPI failed to register %s:", extensionName)
+		slog.Warn(
+			errorMessage,
+			slog.String("id", extension.id),
+			slog.String("type", errorType),
+		)
 		w.WriteHeader(http.StatusForbidden)
 		w.Write(errMsg(errorType, errorMessage))
 		return
@@ -497,8 +504,8 @@ func (eapi *ExtensionsAPI) register(w http.ResponseWriter, r *http.Request) {
 				errorType = "ShutdownEventNotSupportedForInternalExtension"
 			}
 			errorMessage := fmt.Sprintf(
-				"Failed to register %s: event %s", extensionName, event)
-			log.Warnf("%s: %s", errorMessage, errorType)
+				"ExtensionsAPI Failed to Register %s: event %s", extensionName, event)
+			slog.Warn(errorMessage, slog.String("type", errorType))
 			w.WriteHeader(http.StatusForbidden)
 			w.Write(errMsg(errorType, errorMessage))
 			return
@@ -506,8 +513,11 @@ func (eapi *ExtensionsAPI) register(w http.ResponseWriter, r *http.Request) {
 	}
 	extension.registered = true
 
-	log.Infof("%s Extension %s (%s) registered, subscribed to %s",
-		extensionType, extensionName, extension.id, events)
+	message := fmt.Sprintf(
+		"%s Extension %s (%s) Registered, Subscribed to %s",
+		extensionType, extensionName, extension.id, events,
+	)
+	slog.Info(message)
 
 	// Closing awaitRegister signals that this extension is registered.
 	close(extension.awaitRegister)
@@ -597,7 +607,7 @@ func (eapi *ExtensionsAPI) next(w http.ResponseWriter, r *http.Request) {
 			w.Write(response)
 		}
 	case <-ctx.Done():
-		log.Info("Terminating idle Extension instance")
+		slog.Info("Terminating Idle Extension Instance")
 	}
 }
 

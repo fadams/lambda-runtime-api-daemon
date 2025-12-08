@@ -20,7 +20,7 @@
 package process
 
 import (
-	log "github.com/sirupsen/logrus" // Structured logging
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -120,13 +120,13 @@ func (pm *ProcessManager) Unregister(pid int) {
 	// Do lookup to check that the supplied pid actually is a ManagedProcess
 	// as we don't want to call unregister if that's not the case.
 	if mp, ok := pm.processes[pid]; ok {
-		//log.Infof("Unregister called on Managed Process PID %d", pid)
+		//slog.Info("Unregister called on Managed Process:", slog.Int("pid", pid))
 		// Sent SIGTERM to all processes in the ManagedProcesses process group
 		mp.Terminate() // TODO Kill processes that fail to Terminate
 		delete(pm.processes, pid)
 		pm.unregister(pid, len(pm.processes))
 	} /* else {
-		log.Infof("Unregister called on Unmanaged Process PID %d", pid)
+		slog.Info("Unregister called on Unmanaged Process:", slog.Int("pid", pid))
 	}*/
 }
 
@@ -211,7 +211,10 @@ func (pm *ProcessManager) FindPidFromAddress(address string) int {
 func (pm *ProcessManager) HandleSignals() {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Errorf("%s\n%v", r, string(debug.Stack()))
+			slog.Error("Recovered panic",
+				slog.Any("message", r),
+				slog.String("stack", string(debug.Stack())),
+			)
 		}
 	}()
 
@@ -265,16 +268,16 @@ loop:
 						// If no ManagedProcesses remain and termination has
 						// been signalled then we can exit immediately.
 						if len(pm.processes) == 0 && timeoutCh != nil {
-							log.Info("Exiting!")
+							slog.Info("Exiting!")
 							break loop
 						}
 					}
 				}
 			default: // Handle termination signals
-				log.Infof("Received %s signal shutting down", s.String())
+				slog.Info("Shutting Down:", slog.String("signal", s.String()))
 				// If no ManagedProcesses remain we can exit immediately.
 				if len(pm.processes) == 0 {
-					log.Info("Exiting!")
+					slog.Info("Exiting!")
 					break loop
 				}
 				// Send SIGTERM to child processes and a deadline to wait for
@@ -286,7 +289,7 @@ loop:
 
 		case <-timeoutCh:
 			if killSent { // If we time out after sending SIGKILL we hard exit.
-				log.Warn("Failed to SIGKILL child processes")
+				slog.Warn("Failed to SIGKILL Child Processes")
 				break loop
 			}
 			// Send SIGKILL to child processes and a deadline to wait for
@@ -333,7 +336,7 @@ func (mp *ManagedProcess) Start() error {
 		if err == nil {
 			mp.pgid = pgid
 		} else {
-			log.Warnf("Unable to Getpgid(%d)", mp.Pid())
+			slog.Warn("Unable to Getpgid:", slog.Int("pid", mp.Pid()))
 			mp.pgid = mp.Pid() // Fall back to setting pgid to pid
 		}
 	}

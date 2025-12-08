@@ -24,7 +24,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus" // Structured logging
+	"log/slog"
 	"math"
 	"path"
 	"strconv"
@@ -153,7 +153,11 @@ func (invoker *RAPIInvoker) invoke(
 		if bytesCC, err := base64.StdEncoding.DecodeString(b64CC); err == nil {
 			clientContext = string(bytesCC)
 		} else {
-			log.Errorf("Error decoding Client Context %s %s", b64CC, err)
+			slog.Error(
+				"Error Decoding Client Context:",
+				slog.String("context", b64CC),
+				slog.Any("error", err),
+			)
 			return []byte(`{` +
 				`"errorType": "Runtime.LambdaContextUnmarshalError", ` +
 				`"errorMessage": "Unable to decode base64: ` + err.Error() + `"` +
@@ -236,7 +240,7 @@ func (invoker *RAPIInvoker) invoke(
 		// cancellation is actually due to a timeout.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			message := timeoutMessage(cid, float64(invoker.timeout))
-			log.Info(message)
+			slog.Info(message)
 			response = timeoutResponse(message)
 		}
 	}
@@ -256,7 +260,12 @@ func (invoker *RAPIInvoker) invoke(
 }
 
 func (invoker *RAPIInvoker) init() {
-	log.Infof("exec '%s' (cwd=%s, handler=%s)", invoker.cmd[0], invoker.cwd, invoker.handler)
+	slog.Info(
+		"Exec",
+		slog.String("cmd", invoker.cmd[0]),
+		slog.String("cwd", invoker.cwd),
+		slog.String("handler", invoker.handler),
+	)
 
 	// Start the Lambda Runtime Process
 	// Note that as per the AWS Extensions API documentation:
@@ -287,7 +296,10 @@ func (invoker *RAPIInvoker) init() {
 	env = append(env, "_INSTANCE="+strconv.Itoa(invoker.pm.Size()))
 	runtime := invoker.pm.NewManagedProcess(invoker.cmd, invoker.cwd, env, 0)
 	if err := runtime.Start(); err != nil {
-		log.Warnf("Failed to start %v with error %v", runtime, err)
+		slog.Warn(
+			"Failed to Start:",
+			slog.Any("runtime", runtime), slog.Any("error", err),
+		)
 	}
 
 	// As per comment above, the pid of Runtime Process is the process group ID.
@@ -304,7 +316,10 @@ func (invoker *RAPIInvoker) init() {
 			if err := extension.StartUnmanaged(); err == nil {
 				eapi.Add(path.Base(extension.Cmd.Path), pgid)
 			} else {
-				log.Warnf("Failed to start %v with error %v", extension, err)
+				slog.Warn(
+					"Failed to Start:",
+					slog.Any("extension", extension), slog.Any("error", err),
+				)
 			}
 		}
 

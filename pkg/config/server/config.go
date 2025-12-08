@@ -20,7 +20,7 @@
 package server
 
 import (
-	log "github.com/sirupsen/logrus" // Structured logging
+	"log/slog"
 
 	"lambda-runtime-api-daemon/pkg/config/util"
 )
@@ -92,7 +92,7 @@ func GetConfig() *Config {
 		AWS_LAMBDA_FUNCTION_TIMEOUT_DEFAULT,
 	)
 
-	log.Infof("Version: %s", version)
+	slog.Info("Version:", slog.String("version", version))
 
 	config := &Config{
 		InvokeAPIServerURI: invokeAPIHost + ":" + invokeAPIPort,
